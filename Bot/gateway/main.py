@@ -3,6 +3,7 @@ discord.VoiceClient.warn_nacl = False
 from discord import app_commands, ui
 from discord.ext import commands, tasks
 import os, sys, json, logging, aiohttp, re, time
+from datetime import datetime
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, register_guild
@@ -39,10 +40,8 @@ class LanguageSelect(ui.Select):
         options = [discord.SelectOption(label=l, value=l) for l in langs]
         super().__init__(placeholder="Select language...", options=options)
         self.valkey = valkey
-
     async def callback(self, interaction: discord.Interaction):
-        lang = self.values[0]
-        await self.valkey.hset(f"guild_config:{interaction.guild_id}", "language", lang)
+        lang = self.values[0]; await self.valkey.hset(f"guild_config:{interaction.guild_id}", "language", lang)
         await interaction.response.edit_message(content=f"Language set to {lang}.", view=None)
 
 class SearchView(ui.View):
@@ -84,65 +83,56 @@ class SearchView(ui.View):
         start = self.page*10; end = start+10; msg = "\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
         await interaction.response.edit_message(content=msg, view=self)
 
-class SearchFilterView(ui.View):
-    def __init__(self, bot):
-        super().__init__(); self.bot = bot
-        self.boards = []; self.statuses = []
-
-    @ui.select(cls=ui.Select, placeholder="Select Boards", min_values=0, max_values=5, options=[
-        discord.SelectOption(label="Feature Requests", value="feature-requests"),
-        discord.SelectOption(label="Bug Reports", value="bug-reports"),
-        discord.SelectOption(label="SDK Bug Reports", value="sdk-bug-reports"),
-        discord.SelectOption(label="Udon", value="udon"),
-        discord.SelectOption(label="Open Beta", value="open-beta")
-    ])
-    async def select_boards(self, interaction: discord.Interaction, select: ui.Select):
-        self.boards = select.values; await interaction.response.defer()
-
-    @ui.select(cls=ui.Select, placeholder="Select Statuses", min_values=0, max_values=5, options=[
-        discord.SelectOption(label="Open", value="open"),
-        discord.SelectOption(label="Tracked", value="tracked"),
-        discord.SelectOption(label="Planned", value="planned"),
-        discord.SelectOption(label="In Progress", value="in-progress"),
-        discord.SelectOption(label="Complete", value="complete"),
-        discord.SelectOption(label="Available", value="available")
-    ])
-    async def select_statuses(self, interaction: discord.Interaction, select: ui.Select):
-        self.statuses = select.values; await interaction.response.defer()
-
-    @ui.button(label="Enter Metrics & Execute", style=discord.ButtonStyle.green)
-    async def execute_search(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(SearchQueryModal(self))
-
-class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
-    query = ui.TextInput(label='Query Keywords', placeholder='Title or description...', min_length=2)
-    min_votes = ui.TextInput(label='Min Votes', placeholder='0', default='0', required=False)
-    max_votes = ui.TextInput(label='Max Votes', placeholder='9999', required=False)
-    min_comments = ui.TextInput(label='Min Comments', placeholder='0', default='0', required=False)
-
-    def __init__(self, filter_view):
-        super().__init__(); self.filter_view = filter_view
+class SearchModal(ui.Modal, title='Comprehensive Search'):
+    query = ui.TextInput(label='Keywords', placeholder='Title or description content...', min_length=2)
+    filters = ui.TextInput(label='Board/Status (comma-separated)', placeholder='e.g. bug-reports, tracked, planned', required=False)
+    votes = ui.TextInput(label='Votes (Min-Max)', placeholder='e.g. 10-500', required=False)
+    date_range = ui.TextInput(label='Date Range (YYYY-MM-DD to YYYY-MM-DD)', placeholder='e.g. 2024-01-01 to 2024-12-31', required=False)
+    comments = ui.TextInput(label='Min Comments', placeholder='0', required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        valkey = self.filter_view.bot.valkey; res = []; cursor = 0; q = self.query.value.lower()
-        min_v = int(self.min_votes.value) if self.min_votes.value.isdigit() else 0
-        max_v = int(self.max_votes.value) if self.max_votes.value.isdigit() else 999999
-        min_c = int(self.min_comments.value) if self.min_comments.value.isdigit() else 0
+        valkey = get_valkey_client(); res = []; cursor = 0; q = self.query.value.lower()
+
+        # Parse filters
+        filt_list = [f.strip().lower() for f in self.filters.value.split(",")] if self.filters.value else []
+
+        # Parse votes
+        min_v = 0; max_v = 999999
+        if self.votes.value and "-" in self.votes.value:
+            try: v_parts = self.votes.value.split("-"); min_v = int(v_parts[0]); max_v = int(v_parts[1])
+            except: pass
+
+        # Parse date range
+        min_ts = 0; max_ts = 2147483647
+        if self.date_range.value and " to " in self.date_range.value:
+            try:
+                d_parts = self.date_range.value.split(" to ")
+                min_ts = int(datetime.strptime(d_parts[0].strip(), "%Y-%m-%d").timestamp())
+                max_ts = int(datetime.strptime(d_parts[1].strip(), "%Y-%m-%d").timestamp())
+            except: pass
+
+        min_c = int(self.comments.value) if self.comments.value.isdigit() else 0
+
         while True:
             cursor, data = await valkey.hscan("canny_search_index", cursor=cursor, count=100)
             for k, v in data.items():
                 p = json.loads(v)
                 if q in p['title'].lower() or q in p.get('details', '').lower():
-                    if self.filter_view.boards and not any(b in p['url'] for b in self.filter_view.boards): continue
-                    if self.filter_view.statuses and p.get('status', '').lower() not in self.filter_view.statuses: continue
-                    vts = p.get('score', 0); cmt = p.get('comments', 0)
-                    if vts < min_v or vts > max_v or cmt < min_c: continue
+                    if filt_list:
+                        match_filt = False
+                        for f in filt_list:
+                            if f in p.get('board', '').lower() or f == p.get('status', '').lower():
+                                match_filt = True; break
+                        if not match_filt: continue
+                    vts = p.get('score', 0); cmt = p.get('comments', 0); crt = p.get('created', 0)
+                    if vts < min_v or vts > max_v or cmt < min_c or crt < min_ts or crt > max_ts: continue
                     res.append(p)
             if cursor == 0 or len(res) > 500: break
+
         res.sort(key=lambda x: x.get('score', 0), reverse=True)
         if not res: return await interaction.followup.send("No results.", ephemeral=True)
-        view = SearchView(res, bot=self.filter_view.bot)
+        view = SearchView(res, bot=interaction.client)
         await interaction.followup.send("\n".join([f"[{r['title']}]({r['url']})" for r in res[:10]]), view=view, ephemeral=True)
 
 class MyBot(commands.Bot):
@@ -204,96 +194,54 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-@bot.tree.command(name="search", description="Search Canny posts with interactive filters")
-async def search(interaction: discord.Interaction):
-    await interaction.response.send_message("Configure filters:", view=SearchFilterView(bot), ephemeral=True)
+@bot.tree.command(name="search", description="Search Canny posts with Keywords, Board, Status, Votes, and Date Range")
+async def search(interaction: discord.Interaction): await interaction.response.send_modal(SearchModal())
 
 @bot.tree.command(name="ping", description="Check Discord API latency")
 async def ping(interaction: discord.Interaction): await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
 @bot.tree.command(name="stats", description="View bot and indexing statistics")
 async def stats(interaction: discord.Interaction):
-    idx = await bot.valkey.scard("indexed_post_urls")
-    tot = await bot.valkey.hlen("canny_search_index")
+    idx = await bot.valkey.scard("indexed_post_urls"); tot = await bot.valkey.hlen("canny_search_index")
     this_month = time.strftime('%Y-%m')
     status_changes = await bot.valkey.get(f"stats:status_change:{this_month}") or 0
     vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0
-
-    msg = (
-        f"**Canny Bot Stats**\n"
-        f"Total Posts Discovered: {tot}\n"
-        f"Uniquely Indexed Posts: {idx}\n\n"
-        f"**Activity ({this_month})**\n"
-        f"Status Updates: {status_changes}\n"
-        f"Vote Milestones: {vote_reports}"
-    )
+    msg = f"**Canny Bot Stats**\nTotal Discovered: {tot}\nUniquely Indexed: {idx}\n\n**Activity ({this_month})**\nStatus Updates: {status_changes}\nVote Milestones: {vote_reports}"
     await interaction.response.send_message(msg)
 
 @bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(title="Canny Bot Help Article", color=discord.Color.blue())
-
-    general_cmds = (
-        "**/search**: Interactive search for Canny posts with board and status filters.\n"
-        "**/stats**: View total indexed posts and monthly activity metrics.\n"
-        "**/ping**: Check connection latency to Discord and Canny APIs.\n"
-        "**/credit**: View bot affiliation, hosting, and donation information."
-    )
-    embed.add_field(name="General Commands", value=general_cmds, inline=False)
-
-    context_cmds = (
-        "**Index this canny**: (Message Context Menu) Extracts a link and starts tracking it in this server.\n"
-        "**Check canny status**: (Message Context Menu) Shows current status and votes for a link.\n"
-        "**Post what I indexed in hour**: (Message Context Menu) Summarizes your recent indexing activity."
-    )
-    embed.add_field(name="User App Features", value=context_cmds, inline=False)
-
+    embed.add_field(name="General Commands", value="**/search**: Interactive search.\n**/stats**: Activity metrics.\n**/ping**: Latency check.\n**/credit**: Affiliation and donation info.", inline=False)
+    embed.add_field(name="User App Features", value="**Index this canny**: Track link in server.\n**Check canny status**: Get status/votes.\n**Post what I indexed in hour**: Activity summary.", inline=False)
     if interaction.user.guild_permissions.manage_messages:
-        admin_cmds = (
-            "**/mode**: Toggle between **Global** (auto-track trending posts) and **Local** (only manually indexed).\n"
-            "**/set_status_channel**: Designate where status updates and vote reports are posted.\n"
-            "**/set_react_channel**: Specify an additional channel for the bot to automatically index links from.\n"
-            "**/set_language**: Change the UI language for embeds in this server.\n"
-            "**/bulk_add**: Scrape the last 100 messages in a channel and index all found links."
-        )
-        embed.add_field(name="Administrative Commands", value=admin_cmds, inline=False)
-
+        embed.add_field(name="Administrative Commands", value="**/mode**: Global vs Local.\n**/set_status_channel**: Post updates here.\n**/set_react_channel**: Auto-index links here.\n**/set_language**: Change UI language.\n**/bulk_add**: Scrape channel history.", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="credit", description="View bot credits, hosting, and affiliation")
 async def credit(interaction: discord.Interaction):
-    msg = (
-        "**This bot is not affiliated with VRChat Inc.**\n\n"
-        "This bot is unofficially hosted by [VRCβフォース](https://discord.gg/XJHRXwd) "
-        "and is active in the [VRChat Group](https://vrc.group/BETAJP.2222).\n\n"
-        "Want to help with localization? [Check our Google Sheet](https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing).\n"
-        "If you want to host this bot on your server, please [create a ticket](https://discord.gg/XJHRXwd) at VRCβフォース.\n\n"
-        "This bot is [open source](https://github.com/slord399/feedback_tracker/).\n\n"
-        "**Support the Project**\n"
-        "Consider donating via [X (Subscriptions)](https://x.com/slord399/creator-subscriptions/subscribe), "
-        "[Ko-fi](https://ko-fi.com/tony_lewis), or [GitHub Sponsors](https://github.com/sponsors/slord399/)."
-    )
+    msg = "**This bot is not affiliated with VRChat Inc.**\n\nHosted by [VRCβフォース](<https://discord.gg/XJHRXwd>) | [VRChat Group](<https://vrc.group/BETAJP.2222>).\nLocalization: [Google Sheet](<https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing>).\nOpen Source: [GitHub](<https://github.com/slord399/feedback_tracker/>).\nDonations: [X (formerly Twitter)](<https://x.com/slord399/creator-subscriptions/subscribe>) | [Ko-fi](<https://ko-fi.com/tony_lewis>) | [GitHub Sponsors](<https://github.com/sponsors/slord399/>)."
     await interaction.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="mode", description="Toggle Global or Local indexing mode for this guild")
+@bot.tree.command(name="mode", description="Toggle Global or Local indexing mode")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def mode(interaction: discord.Interaction, mode: str):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "mode", mode.lower()); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message(f"Mode: {mode}")
 
-@bot.tree.command(name="set_status_channel", description="Set the channel where Canny status updates will be posted")
+@bot.tree.command(name="set_status_channel", description="Set the channel for status updates")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_status_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "status_channel", str(channel.id)); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("Status channel set.")
 
-@bot.tree.command(name="set_react_channel", description="Set an additional channel for the bot to listen for Canny URLs")
+@bot.tree.command(name="set_react_channel", description="Set an additional channel for auto-indexing")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_react_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "react_channel", str(channel.id)); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("React channel set.")
 
-@bot.tree.command(name="bulk_add", description="Bulk index all Canny URLs found in the last 100 messages of this channel")
+@bot.tree.command(name="bulk_add", description="Index URLs from channel history")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def bulk_add(interaction: discord.Interaction):
     await interaction.response.defer(); found = 0
@@ -304,13 +252,13 @@ async def bulk_add(interaction: discord.Interaction):
                 await bot.valkey.sadd("indexed_post_urls", u); await bot.valkey.sadd(f"guild_indexed_posts:{interaction.guild_id}", u); found += 1
     await interaction.followup.send(f"Added {found} URLs.")
 
-@bot.tree.command(name="set_language", description="Change the UI language for bot embeds in this guild")
+@bot.tree.command(name="set_language", description="Change UI language")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_language(interaction: discord.Interaction):
     view = ui.View(); view.add_item(LanguageSelect(bot.valkey))
     await interaction.response.send_message("Select language:", view=view, ephemeral=True)
 
-@bot.tree.command(name="update_localization", description="Sync bot localization with a Google Sheet CSV")
+@bot.tree.command(name="update_localization", description="Sync localization from Google Sheet")
 async def update_localization(interaction: discord.Interaction, sheet_url: str):
     if interaction.guild_id != 590756888254349315: return await interaction.response.send_message("No permission.")
     base = sheet_url.split("/edit")[0]; gid = None
@@ -324,10 +272,9 @@ async def update_localization(interaction: discord.Interaction, sheet_url: str):
                 bot.localizer.load(); await interaction.response.send_message("Updated.")
             else: await interaction.response.send_message(f"Failed. {resp.status}")
 
-@bot.tree.command(name="test_feed", description="Test Canny embed rendering for a specific URL")
+@bot.tree.command(name="test_feed", description="Test embed rendering")
 async def test_feed(interaction: discord.Interaction, canny_url: str):
-    await interaction.response.defer(ephemeral=True)
-    await bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id}))
+    await interaction.response.defer(ephemeral=True); await bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id}))
     await interaction.followup.send("Test feed requested.")
 
 if __name__ == "__main__":

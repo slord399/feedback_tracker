@@ -63,9 +63,15 @@ async def poll_board_recursive(valkey, limiter, board):
             status = full_post.get("status", "open")
             details = full_post.get("details", "")
             comments = full_post.get("commentCount", 0)
+            created_iso = full_post.get("created", "")
+            created_ts = 0
+            try:
+                dt = datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
+                created_ts = int(dt.timestamp())
+            except: pass
+
             p_url = f"https://feedback.vrchat.com/{board['urlName']}/p/{uname}"
 
-            # Check for vote/status changes even for non-indexed posts
             pid = full_post.get("_id")
             if pid:
                 old_json = await valkey.get(f"post_cache:{pid}")
@@ -84,9 +90,12 @@ async def poll_board_recursive(valkey, limiter, board):
                 "score": score,
                 "status": status,
                 "comments": comments,
-                "board": board["name"]
+                "board": board["name"],
+                "created": created_ts
             }))
             total_indexed += 1
+            if total_indexed % 1000 == 0:
+                logger.info(f"Progress: {total_indexed} posts indexed on board {board['name']}")
 
         # Check hasNextPage
         has_next = False
