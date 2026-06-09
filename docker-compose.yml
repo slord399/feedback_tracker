@@ -12,7 +12,7 @@ services:
     build: .
     command: python Bot/gateway/main.py
     environment:
-      - DISCORD_TOKEN=\${DISCORD_TOKEN}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
       - SHARD_ID=0
       - TOTAL_SHARDS=2
       - VALKEY_NODES=valkey-1:6379,valkey-2:6379,valkey-3:6379,valkey-10:6379,valkey-11:6379
@@ -24,7 +24,7 @@ services:
     build: .
     command: python Bot/gateway/main.py
     environment:
-      - DISCORD_TOKEN=\${DISCORD_TOKEN}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
       - SHARD_ID=1
       - TOTAL_SHARDS=2
       - VALKEY_NODES=valkey-1:6379,valkey-2:6379,valkey-3:6379,valkey-10:6379,valkey-11:6379
@@ -36,7 +36,7 @@ services:
     build: .
     command: python Bot/worker/main.py
     environment:
-      - DISCORD_TOKEN=\${DISCORD_TOKEN}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
       - VALKEY_NODES=valkey-1:6379,valkey-2:6379,valkey-3:6379,valkey-10:6379,valkey-11:6379
     networks:
       - booth_evaluation_ops_default
@@ -46,7 +46,7 @@ services:
     build: .
     command: python Bot/worker/main.py
     environment:
-      - DISCORD_TOKEN=\${DISCORD_TOKEN}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
       - VALKEY_NODES=valkey-1:6379,valkey-2:6379,valkey-3:6379,valkey-10:6379,valkey-11:6379
     networks:
       - booth_evaluation_ops_default

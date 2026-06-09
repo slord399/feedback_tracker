@@ -1,5 +1,5 @@
 import os
-from redis.cluster import RedisCluster, ClusterNode
+from redis.asyncio.cluster import RedisCluster, ClusterNode
 
 def get_valkey_client():
     # Nodes provided in requirements
@@ -10,10 +10,8 @@ def get_valkey_client():
         ClusterNode("valkey-10", 6379),
         ClusterNode("valkey-11", 6379),
     ]
-    # In local dev/test environment, we might want to override this via ENV
     env_nodes = os.getenv("VALKEY_NODES")
     if env_nodes:
-        # Expected format: host1:port1,host2:port2
         startup_nodes = []
         for node in env_nodes.split(","):
             host, port = node.split(":")
@@ -26,8 +24,8 @@ def get_valkey_client():
         socket_connect_timeout=5
     )
 
-def register_guild(valkey, guild_id):
-    valkey.sadd("active_guilds", str(guild_id))
+async def register_guild(valkey, guild_id):
+    await valkey.sadd("active_guilds", str(guild_id))
 
-def get_active_guilds(valkey):
-    return valkey.smembers("active_guilds")
+async def get_active_guilds(valkey):
+    return await valkey.smembers("active_guilds")

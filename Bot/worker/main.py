@@ -6,7 +6,7 @@ import sys
 import aiohttp
 import discord
 import time
-import redis
+import redis.asyncio as redis
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, get_active_guilds
@@ -22,7 +22,8 @@ class Worker:
         self.valkey = get_valkey_client()
         self.global_limiter = get_global_limiter(self.valkey)
         self.guild_limiter = get_guild_limiter(self.valkey)
-        self.token = os.getenv("DISCORD_TOKEN")
+        t = os.getenv("DISCORD_TOKEN")
+        self.token = t.strip() if t else None
         self.base_url = "https://discord.com/api/v10"
 
     async def send_request(self, method, endpoint, payload=None, guild_id=None):
@@ -45,63 +46,49 @@ class Worker:
         logger.info("Worker started")
         while True:
             try:
-                job_data = self.valkey.brpop("discord_jobs", timeout=5)
-            except redis.exceptions.TimeoutError:
-                continue
-            except Exception as e:
-                logger.error(f"Valkey error: {e}")
-                await asyncio.sleep(1)
-                continue
+                # BRPOP is blocking but this is the asyncio version
+                res = await self.valkey.brpop("discord_jobs", timeout=5)
+                if not res: continue
+                job = json.loads(res[1])
+                # Ensure global rate limit before scraping
+                await self.global_limiter.acquire()
+                data = await fetch_canny_data(job["url"])
+                parts = job["url"].split("/")
+                uname = parts[parts.index("p") + 1] if "p" in parts else None
+                post = extract_post_from_data(data, uname)
+                if not post: continue
 
-            if not job_data: continue
-            job = json.loads(job_data[1])
-            try:
-                if job["type"] in ["index_confirm", "check_status", "status_change", "vote_progress"]:
-                    data = await fetch_canny_data(job["url"])
-                    parts = job["url"].split("/")
-                    url_name = parts[parts.index("p") + 1] if "p" in parts else None
-                    post = extract_post_from_data(data, url_name)
-                    if not post: continue
+                if job["type"] == "index_confirm":
+                    gid = job["guild_id"]; cid = job["channel_id"]
+                    if job.get("original_message_id"): await self.purge_message(cid, job["original_message_id"], gid)
+                    lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
+                    embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
+                    await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
+                    for oid in await get_active_guilds(self.valkey):
+                        if str(oid) == str(gid): continue
+                        cfg = await self.valkey.hgetall(f"guild_config:{oid}")
+                        if cfg.get("mode") == "global" and cfg.get("status_channel"):
+                            oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Global User", "icon": None}, lang=cfg.get("language", "English"))
+                            await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid)
 
-                    if job["type"] == "index_confirm":
-                        guild_id = job["guild_id"]; channel_id = job["channel_id"]
-                        if job.get("original_message_id"): await self.purge_message(channel_id, job["original_message_id"], guild_id)
-                        lang = self.valkey.hget(f"guild_config:{guild_id}", "language") or "English"
-                        user_info = {"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}
-                        embed = create_canny_embed(post, user_info=user_info, lang=lang)
-                        await self.send_request("POST", f"/channels/{channel_id}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, guild_id)
+                elif job["type"] == "check_status":
+                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [create_canny_embed(post).to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))})
 
-                        active_guilds = get_active_guilds(self.valkey)
-                        for other_id in active_guilds:
-                            if str(other_id) == str(guild_id): continue
-                            cfg = self.valkey.hgetall(f"guild_config:{other_id}")
-                            if cfg.get("mode") == "global":
-                                chan = cfg.get("status_channel")
-                                if chan:
-                                    other_embed = create_canny_embed(post, user_info={"type": "indexed", "name": "Global User", "icon": None}, lang=cfg.get("language", "English"))
-                                    await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [other_embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, other_id)
-
-                    elif job["type"] == "check_status":
-                        embed = create_canny_embed(post)
-                        await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))})
-
-                    elif job["type"] in ["status_change", "vote_progress"]:
-                        self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
-                        active_guilds = get_active_guilds(self.valkey)
-                        for guild_id in active_guilds:
-                            if self.valkey.sismember(f"guild_indexed_posts:{guild_id}", job["url"]):
-                                cfg = self.valkey.hgetall(f"guild_config:{guild_id}")
-                                chan = cfg.get("status_channel")
-                                if chan:
-                                    embed = create_canny_embed(post, old_status=job.get("old_status"), lang=cfg.get("language", "English"))
-                                    await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, guild_id)
-            except Exception as e: logger.exception("Worker error")
+                elif job["type"] in ["status_change", "vote_progress"]:
+                    await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
+                    for gid in await get_active_guilds(self.valkey):
+                        if await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"]):
+                            cfg = await self.valkey.hgetall(f"guild_config:{gid}")
+                            if cfg.get("status_channel"):
+                                emb = create_canny_embed(post, old_status=job.get("old_status"), lang=cfg.get("language", "English"))
+                                await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
+            except redis.exceptions.TimeoutError: continue
+            except Exception: logger.exception("Worker error")
 
     def view_to_components(self, view):
-        comps = []
-        for item in view.children:
-            if isinstance(item, discord.ui.Button): comps.append({"type": 2, "style": 5, "label": item.label, "url": item.url})
-        return [{"type": 1, "components": comps}] if comps else []
+        cs = []
+        for i in view.children:
+            if isinstance(i, discord.ui.Button): cs.append({"type": 2, "style": 5, "label": i.label, "url": i.url})
+        return [{"type": 1, "components": cs}] if cs else []
 
-if __name__ == "__main__":
-    asyncio.run(Worker().run())
+if __name__ == "__main__": asyncio.run(Worker().run())
