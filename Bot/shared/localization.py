@@ -12,17 +12,21 @@ class Localizer:
         if not os.path.exists(self.csv_path):
             return
 
-        self.translations = {}
-        with open(self.csv_path, mode='r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            if not reader.fieldnames:
-                return
-            self.languages = [col for col in reader.fieldnames if col != 'string_name']
-
-            for row in reader:
-                name = row.get('string_name')
-                if name:
-                    self.translations[name] = row
+        new_translations = {}
+        try:
+            with open(self.csv_path, mode='r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames or 'string_name' not in reader.fieldnames:
+                    return
+                self.languages = [col for col in reader.fieldnames if col != 'string_name']
+                for row in reader:
+                    name = row.get('string_name')
+                    if name:
+                        new_translations[name] = row
+            if new_translations:
+                self.translations = new_translations
+        except Exception:
+            pass
 
     def get(self, string_name, lang="English", **kwargs):
         row = self.translations.get(string_name)

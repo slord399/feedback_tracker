@@ -1,8 +1,13 @@
 import os
 from redis.asyncio.cluster import RedisCluster, ClusterNode
 
+_valkey_instance = None
+
 def get_valkey_client():
-    # Nodes provided in requirements
+    global _valkey_instance
+    if _valkey_instance is not None:
+        return _valkey_instance
+
     startup_nodes = [
         ClusterNode("valkey-1", 6379),
         ClusterNode("valkey-2", 6379),
@@ -17,12 +22,13 @@ def get_valkey_client():
             host, port = node.split(":")
             startup_nodes.append(ClusterNode(host, int(port)))
 
-    return RedisCluster(
+    _valkey_instance = RedisCluster(
         startup_nodes=startup_nodes,
         decode_responses=True,
         socket_timeout=10,
         socket_connect_timeout=5
     )
+    return _valkey_instance
 
 async def register_guild(valkey, guild_id):
     await valkey.sadd("active_guilds", str(guild_id))

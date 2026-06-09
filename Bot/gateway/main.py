@@ -4,6 +4,7 @@ from discord import app_commands, ui
 from discord.ext import commands, tasks
 import os, sys, json, logging, aiohttp, re, time
 from datetime import datetime
+import asyncio
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, register_guild
@@ -15,13 +16,13 @@ logging.basicConfig(level=logging.INFO); logger = logging.getLogger("gateway")
 SHEET_URL = "https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing"
 
 class GuildSelect(ui.Select):
-    def __init__(self, guilds, canny_url, message_id=None):
+    def __init__(self, bot, guilds, canny_url, message_id=None):
         options = [discord.SelectOption(label=g.name, value=str(g.id)) for g in guilds[:25]]
         super().__init__(placeholder="Select server...", options=options)
-        self.canny_url = canny_url; self.message_id = message_id
+        self.bot = bot; self.canny_url = canny_url; self.message_id = message_id
 
     async def callback(self, interaction: discord.Interaction):
-        gid = self.values[0]; valkey = get_valkey_client()
+        gid = self.values[0]; valkey = self.bot.valkey
         await valkey.sadd("indexed_post_urls", self.canny_url)
         await valkey.sadd(f"guild_indexed_posts:{gid}", self.canny_url)
         await valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{self.canny_url}")
@@ -79,7 +80,7 @@ class SearchView(ui.View):
             gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", self.selected_url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", self.selected_url); await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{self.selected_url}")
             await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": self.selected_url, "guild_id": gid, "channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url)}))
             return await interaction.response.send_message("Indexed!", ephemeral=True)
-        view = ui.View(); view.add_item(GuildSelect(self.bot.guilds, self.selected_url))
+        view = ui.View(); view.add_item(GuildSelect(self.bot, self.bot.guilds, self.selected_url))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
     async def update_msg(self, interaction):
         start = self.page*10; end = start+10; msg = "\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
@@ -162,14 +163,16 @@ class MyBot(commands.Bot):
         self.valkey = get_valkey_client(); self.localizer = get_localizer()
 
     async def setup_hook(self):
+        logger.info(f"Setting up Shard {self.shard_id}...")
         self.tree.add_command(app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny))
         self.tree.add_command(app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status))
         self.tree.add_command(app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour))
-        if self.shard_id is None or self.shard_id == 0: await self.tree.sync()
+        if self.shard_id is None or self.shard_id == 0:
+            await self.tree.sync()
+            self.auto_sync_localization.start()
+            asyncio.create_task(self.sync_localization())
         self.update_activity.start()
-        self.auto_sync_localization.start()
-        # Initial sync
-        asyncio.create_task(self.sync_localization())
+        logger.info("Setup hook complete.")
 
     @tasks.loop(minutes=5)
     async def update_activity(self):
@@ -183,6 +186,7 @@ class MyBot(commands.Bot):
         await self.sync_localization()
 
     async def sync_localization(self):
+        logger.info("Syncing localization...")
         try:
             base = SHEET_URL.split("/edit")[0]
             gid = SHEET_URL.split("gid=")[1].split("&")[0] if "gid=" in SHEET_URL else None
@@ -192,14 +196,14 @@ class MyBot(commands.Bot):
                 async with session.get(csv_url) as resp:
                     if resp.status == 200:
                         content = await resp.text()
-                        with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(content)
-                        self.localizer.load()
-                        logger.info("Localization synced from Google Sheet")
-                        return True
-                    else:
-                        logger.error(f"Failed to sync localization: HTTP {resp.status}")
-        except Exception as e:
-            logger.exception("Localization sync error")
+                        if "string_name" in content: # Basic sanity check
+                            with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(content)
+                            self.localizer.load()
+                            logger.info("Localization synced successfully.")
+                            return True
+                        else: logger.error("Downloaded CSV looks invalid (missing headers)")
+                    else: logger.error(f"Failed to sync localization: HTTP {resp.status}")
+        except Exception: logger.exception("Localization sync error")
         return False
 
     async def on_message(self, message):
@@ -220,7 +224,7 @@ class MyBot(commands.Bot):
             gid = int(lgid); await self.valkey.sadd("indexed_post_urls", url); await self.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
             await self.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id}))
             return await interaction.response.send_message("Indexed!", ephemeral=True)
-        view = ui.View(); view.add_item(GuildSelect(self.guilds, url, message.id))
+        view = ui.View(); view.add_item(GuildSelect(self, self.guilds, url, message.id))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
 
     async def check_canny_status(self, interaction: discord.Interaction, message: discord.Message):
