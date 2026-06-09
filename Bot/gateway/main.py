@@ -37,7 +37,10 @@ class MyBot(commands.Bot):
         self.tree.add_command(app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny))
         self.tree.add_command(app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status))
         self.tree.add_command(app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour))
-        await self.tree.sync(); self.update_activity.start()
+        # Only sync on shard 0 to prevent duplicates
+        if self.shard_id is None or self.shard_id == 0:
+            await self.tree.sync()
+        self.update_activity.start()
 
     @tasks.loop(minutes=5)
     async def update_activity(self):
