@@ -15,6 +15,10 @@ logging.basicConfig(level=logging.INFO); logger = logging.getLogger("gateway")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing"
 
+# Support User Apps in DMs and Guilds
+INTEGRATION_TYPES = {discord.IntegrationType.guild_install, discord.IntegrationType.user_install}
+CONTEXTS = {discord.InteractionContextType.guild, discord.InteractionContextType.bot_dm, discord.InteractionContextType.private_channel}
+
 class GuildSelect(ui.Select):
     def __init__(self, bot, guilds, canny_url, message_id=None):
         options = [discord.SelectOption(label=g.name, value=str(g.id)) for g in guilds[:25]]
@@ -71,7 +75,8 @@ class SearchView(ui.View):
         self.page = min((len(self.results)-1)//10, self.page + 1); self.update_components(); await self.update_msg(interaction)
     async def post_as_embed(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
-        await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": self.selected_url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}))
+        gid = interaction.guild_id if interaction.guild else None
+        await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": self.selected_url, "channel_id": interaction.channel_id, "guild_id": gid}))
         await interaction.response.send_message("Posting...", ephemeral=True)
     async def index_selected(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
@@ -139,7 +144,6 @@ class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
                 min_ts = int(datetime.strptime(d_parts[0].strip(), "%Y-%m-%d").timestamp())
                 max_ts = int(datetime.strptime(d_parts[1].strip(), "%Y-%m-%d").timestamp())
             except: pass
-
         while True:
             cursor, data = await valkey.hscan("canny_search_index", cursor=cursor, count=100)
             for k, v in data.items():
@@ -164,9 +168,11 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
-        self.tree.add_command(app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny))
-        self.tree.add_command(app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status))
-        self.tree.add_command(app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour))
+        # Context Menu Commands
+        self.tree.add_command(app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny), contexts=CONTEXTS, extras={'integration_types': INTEGRATION_TYPES})
+        self.tree.add_command(app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status), contexts=CONTEXTS, extras={'integration_types': INTEGRATION_TYPES})
+        self.tree.add_command(app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour), contexts=CONTEXTS, extras={'integration_types': INTEGRATION_TYPES})
+
         if self.shard_id is None or self.shard_id == 0:
             await self.tree.sync()
             self.auto_sync_localization.start()
@@ -174,11 +180,12 @@ class MyBot(commands.Bot):
         self.update_activity.start()
         logger.info("Setup hook complete.")
 
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=60)
     async def update_activity(self):
         try:
             idx = await self.valkey.scard("indexed_post_urls"); tot = await self.valkey.hlen("canny_search_index")
-            await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="feedback.vrchat.com", state="Tracking", details=f"{idx} of {tot} indexed"))
+            activity = discord.Activity(type=discord.ActivityType.watching, name="feedback.vrchat.com", state="Tracking", details=f"{idx} of {tot} indexed")
+            await self.change_presence(activity=activity)
         except: pass
 
     @tasks.loop(hours=1)
@@ -196,12 +203,11 @@ class MyBot(commands.Bot):
                 async with session.get(csv_url) as resp:
                     if resp.status == 200:
                         content = await resp.text()
-                        if "string_name" in content: # Basic sanity check
+                        if "string_name" in content:
                             with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(content)
                             self.localizer.load()
                             logger.info("Localization synced successfully.")
                             return True
-                        else: logger.error("Downloaded CSV looks invalid (missing headers)")
                     else: logger.error(f"Failed to sync localization: HTTP {resp.status}")
         except Exception: logger.exception("Localization sync error")
         return False
@@ -247,13 +253,19 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 @bot.tree.command(name="search", description="Search Canny posts with interactive filters")
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=True, users=True)
 async def search(interaction: discord.Interaction):
     await interaction.response.send_message("Configure filters:", view=SearchFilterView(bot), ephemeral=True)
 
 @bot.tree.command(name="ping", description="Check Discord API latency")
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=True, users=True)
 async def ping(interaction: discord.Interaction): await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
 @bot.tree.command(name="stats", description="View bot and indexing statistics")
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=True, users=True)
 async def stats(interaction: discord.Interaction):
     idx = await bot.valkey.scard("indexed_post_urls"); tot = await bot.valkey.hlen("canny_search_index")
     this_month = time.strftime('%Y-%m')
@@ -263,15 +275,19 @@ async def stats(interaction: discord.Interaction):
     await interaction.response.send_message(msg)
 
 @bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=True, users=True)
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(title="Canny Bot Help Article", color=discord.Color.blue())
     embed.add_field(name="General Commands", value="**/search**: Interactive search.\n**/stats**: Activity metrics.\n**/ping**: Latency check.\n**/credit**: Affiliation and donation info.", inline=False)
     embed.add_field(name="User App Features", value="**Index this canny**: Track link in server.\n**Check canny status**: Get status/votes.\n**Post what I indexed in hour**: Activity summary.", inline=False)
-    if interaction.user.guild_permissions.manage_messages:
+    if interaction.user and getattr(interaction.user, 'guild_permissions', None) and interaction.user.guild_permissions.manage_messages:
         embed.add_field(name="Administrative Commands", value="**/mode**: Global vs Local.\n**/set_status_channel**: Post updates here.\n**/set_react_channel**: Auto-index links here.\n**/set_language**: Change UI language.\n**/bulk_add**: Scrape channel history.", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="credit", description="View bot credits, hosting, and affiliation")
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=True, users=True)
 async def credit(interaction: discord.Interaction):
     msg = (
         "**This bot is not affiliated with VRChat Inc.**\n\n"

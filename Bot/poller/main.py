@@ -36,6 +36,12 @@ async def poll_board_recursive(valkey, limiter, board):
     total_indexed = 0
     logger.info(f"Starting crawl for board {board['name']}")
 
+    # Skip boards already crawled in the past hour
+    last_crawl = await valkey.get(f"last_board_crawl:{board['id']}")
+    if last_crawl and (time.time() - float(last_crawl)) < 3600:
+        logger.info(f"Skipping board {board['name']}, already crawled recently.")
+        return
+
     while True:
         url = f"{board_url}?sort=new&page={page}"
         await limiter.acquire()
@@ -109,6 +115,7 @@ async def poll_board_recursive(valkey, limiter, board):
         page += 1
         if page > 1000: break
 
+    await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=3600)
     logger.info(f"Board {board['name']} crawl complete. Total: {total_indexed}")
 
 def get_polling_interval(post):
