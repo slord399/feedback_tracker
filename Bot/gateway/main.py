@@ -15,9 +15,13 @@ logging.basicConfig(level=logging.INFO); logger = logging.getLogger("gateway")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing"
 
-# Support User Apps in DMs and Guilds using correct discord.py 2.x Enums
-ALLOWED_INSTALLS = app_commands.AppInstallationType(guild=True, user=True)
-ALLOWED_CONTEXTS = app_commands.AppCommandContext(guild=True, dm_channel=True, private_channel=True)
+# User App configurations
+USER_APP_INSTALLS = app_commands.AppInstallationType(guild=True, user=True)
+USER_APP_CONTEXTS = app_commands.AppCommandContext(guild=True, dm_channel=True, private_channel=True)
+
+# Guild Only configurations
+GUILD_ONLY_INSTALLS = app_commands.AppInstallationType(guild=True)
+GUILD_ONLY_CONTEXTS = app_commands.AppCommandContext(guild=True)
 
 class GuildSelect(ui.Select):
     def __init__(self, bot, guilds, canny_url, message_id=None):
@@ -36,7 +40,14 @@ class GuildSelect(ui.Select):
 
 class ResultSelect(ui.Select):
     def __init__(self, posts):
-        options = [discord.SelectOption(label=p['title'][:100], value=p['url']) for p in posts]
+        options = []
+        for p in posts:
+            val = p['url']
+            if len(val) > 100:
+                parts = val.split("/")
+                if "p" in parts: val = "NAME:" + parts[parts.index("p") + 1][:95]
+                else: val = val[-100:]
+            options.append(discord.SelectOption(label=p['title'][:100], value=val, description=p['url'][-50:]))
         super().__init__(placeholder="Select a post...", options=options)
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_url = self.values[0]; await interaction.response.defer()
@@ -69,23 +80,32 @@ class SearchView(ui.View):
         index_btn = ui.Button(label="Index", style=discord.ButtonStyle.green)
         index_btn.callback = self.index_selected; self.add_item(index_btn)
 
+    async def get_real_url(self, val):
+        if val.startswith("NAME:"):
+            uname = val[5:]
+            raw = await self.bot.valkey.hget("canny_search_index", uname)
+            if raw: return json.loads(raw).get('url')
+        return val
+
     async def prev(self, interaction: discord.Interaction):
         self.page = max(0, self.page - 1); self.update_components(); await self.update_msg(interaction)
     async def next(self, interaction: discord.Interaction):
         self.page = min((len(self.results)-1)//10, self.page + 1); self.update_components(); await self.update_msg(interaction)
     async def post_as_embed(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
+        url = await self.get_real_url(self.selected_url)
         gid = interaction.guild_id if interaction.guild else None
-        await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": self.selected_url, "channel_id": interaction.channel_id, "guild_id": gid}))
+        await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": gid}))
         await interaction.response.send_message("Posting...", ephemeral=True)
     async def index_selected(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
+        url = await self.get_real_url(self.selected_url)
         lgid = await self.bot.valkey.get(f"last_index_selection:{interaction.user.id}")
         if lgid:
-            gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", self.selected_url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", self.selected_url); await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{self.selected_url}")
-            await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": self.selected_url, "guild_id": gid, "channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url)}))
+            gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
+            await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url)}))
             return await interaction.response.send_message("Indexed!", ephemeral=True)
-        view = ui.View(); view.add_item(GuildSelect(self.bot, self.bot.guilds, self.selected_url))
+        view = ui.View(); view.add_item(GuildSelect(self.bot, self.bot.guilds, url))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
     async def update_msg(self, interaction):
         start = self.page*10; end = start+10; msg = "\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
@@ -126,7 +146,7 @@ class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
     min_votes = ui.TextInput(label='Min Votes', placeholder='0', default='0', required=False)
     max_votes = ui.TextInput(label='Max Votes', placeholder='9999', required=False)
     min_comments = ui.TextInput(label='Min Comments', placeholder='0', default='0', required=False)
-    date_range = ui.TextInput(label='Date Range (YYYY-MM-DD to YYYY-MM-DD)', placeholder='e.g. 2024-01-01 to 2024-12-31', required=False)
+    date_range = ui.TextInput(label='Date Range', placeholder='YYYY-MM-DD to YYYY-MM-DD', required=False)
 
     def __init__(self, filter_view):
         super().__init__(); self.filter_view = filter_view
@@ -168,17 +188,17 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
-        # Context Menu Commands with correct attributes
+        # Context Menu Commands (User App enabled)
         cmd_index = app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny)
-        cmd_index.allowed_contexts = ALLOWED_CONTEXTS; cmd_index.allowed_installs = ALLOWED_INSTALLS
+        cmd_index.allowed_contexts = USER_APP_CONTEXTS; cmd_index.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_index)
 
         cmd_status = app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status)
-        cmd_status.allowed_contexts = ALLOWED_CONTEXTS; cmd_status.allowed_installs = ALLOWED_INSTALLS
+        cmd_status.allowed_contexts = USER_APP_CONTEXTS; cmd_status.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_status)
 
         cmd_hour = app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour)
-        cmd_hour.allowed_contexts = ALLOWED_CONTEXTS; cmd_hour.allowed_installs = ALLOWED_INSTALLS
+        cmd_hour.allowed_contexts = USER_APP_CONTEXTS; cmd_hour.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_hour)
 
         if self.shard_id is None or self.shard_id == 0:
@@ -197,8 +217,7 @@ class MyBot(commands.Bot):
         except: pass
 
     @tasks.loop(hours=1)
-    async def auto_sync_localization(self):
-        await self.sync_localization()
+    async def auto_sync_localization(self): await self.sync_localization()
 
     async def sync_localization(self):
         logger.info("Syncing localization...")
@@ -213,8 +232,7 @@ class MyBot(commands.Bot):
                         content = await resp.text()
                         if "string_name" in content:
                             with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(content)
-                            self.localizer.load()
-                            logger.info("Localization synced successfully.")
+                            self.localizer.load(); logger.info("Localization synced.")
                             return True
                     else: logger.error(f"Failed to sync localization: HTTP {resp.status}")
         except Exception: logger.exception("Localization sync error")
@@ -245,10 +263,8 @@ class MyBot(commands.Bot):
         urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)
         url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
         if not url: return await interaction.response.send_message("No URL.", ephemeral=True)
-        gid = interaction.guild_id if interaction.guild else None
-        job = {"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": gid}
-        await self.valkey.lpush("discord_jobs", json.dumps(job))
-        await interaction.response.send_message("Checking...", ephemeral=True)
+        job = {"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}
+        await self.valkey.lpush("discord_jobs", json.dumps(job)); await interaction.response.send_message("Checking...", ephemeral=True)
 
     async def post_indexed_hour(self, interaction: discord.Interaction, message: discord.Message):
         idx = await self.valkey.smembers(f"user_indexed_posts:{interaction.user.id}")
@@ -308,24 +324,32 @@ async def credit(interaction: discord.Interaction):
     await interaction.response.send_message(msg, ephemeral=True)
 
 @bot.tree.command(name="mode", description="Toggle Global or Local indexing mode")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
 async def mode(interaction: discord.Interaction, mode: str):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "mode", mode.lower()); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message(f"Mode: {mode}")
 
 @bot.tree.command(name="set_status_channel", description="Set the channel for status updates")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_status_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "status_channel", str(channel.id)); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("Status channel set.")
 
 @bot.tree.command(name="set_react_channel", description="Set an additional channel for auto-indexing")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_react_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "react_channel", str(channel.id)); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("React channel set.")
 
 @bot.tree.command(name="bulk_add", description="Index URLs from channel history")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
 async def bulk_add(interaction: discord.Interaction):
     await interaction.response.defer(); found = 0
@@ -337,18 +361,24 @@ async def bulk_add(interaction: discord.Interaction):
     await interaction.followup.send(f"Added {found} URLs.")
 
 @bot.tree.command(name="set_language", description="Change UI language")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_language(interaction: discord.Interaction):
     view = ui.View(); view.add_item(LanguageSelect(bot.valkey))
     await interaction.response.send_message("Select language:", view=view, ephemeral=True)
 
 @bot.tree.command(name="update_localization", description="Sync localization from Google Sheet")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def update_localization(interaction: discord.Interaction):
     if interaction.guild_id != 590756888254349315: return await interaction.response.send_message("No permission.")
     success = await bot.sync_localization()
     await interaction.response.send_message("Updated." if success else "Failed.")
 
 @bot.tree.command(name="test_feed", description="Test embed rendering")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def test_feed(interaction: discord.Interaction, canny_url: str):
     await interaction.response.defer(ephemeral=True)
     gid = interaction.guild_id if interaction.guild else None
