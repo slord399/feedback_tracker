@@ -68,7 +68,7 @@ class SearchView(ui.View):
         self.page = min((len(self.results)-1)//10, self.page + 1); self.update_components(); await self.update_msg(interaction)
     async def post_as_embed(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
-        await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": self.selected_url, "channel_id": interaction.channel_id}))
+        await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": self.selected_url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}))
         await interaction.response.send_message("Posting...", ephemeral=True)
     async def index_selected(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
@@ -83,27 +83,52 @@ class SearchView(ui.View):
         start = self.page*10; end = start+10; msg = "\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
         await interaction.response.edit_message(content=msg, view=self)
 
-class SearchModal(ui.Modal, title='Comprehensive Search'):
-    query = ui.TextInput(label='Keywords', placeholder='Title or description content...', min_length=2)
-    filters = ui.TextInput(label='Board/Status (comma-separated)', placeholder='e.g. bug-reports, tracked, planned', required=False)
-    votes = ui.TextInput(label='Votes (Min-Max)', placeholder='e.g. 10-500', required=False)
+class SearchFilterView(ui.View):
+    def __init__(self, bot):
+        super().__init__(); self.bot = bot
+        self.boards = []; self.statuses = []
+
+    @ui.select(cls=ui.Select, placeholder="Select Boards", min_values=0, max_values=5, options=[
+        discord.SelectOption(label="Feature Requests", value="feature-requests"),
+        discord.SelectOption(label="Bug Reports", value="bug-reports"),
+        discord.SelectOption(label="SDK Bug Reports", value="sdk-bug-reports"),
+        discord.SelectOption(label="Udon", value="udon"),
+        discord.SelectOption(label="Open Beta", value="open-beta")
+    ])
+    async def select_boards(self, interaction: discord.Interaction, select: ui.Select):
+        self.boards = select.values; await interaction.response.defer()
+
+    @ui.select(cls=ui.Select, placeholder="Select Statuses", min_values=0, max_values=5, options=[
+        discord.SelectOption(label="Open", value="open"),
+        discord.SelectOption(label="Tracked", value="tracked"),
+        discord.SelectOption(label="Planned", value="planned"),
+        discord.SelectOption(label="In Progress", value="in-progress"),
+        discord.SelectOption(label="Complete", value="complete"),
+        discord.SelectOption(label="Available", value="available")
+    ])
+    async def select_statuses(self, interaction: discord.Interaction, select: ui.Select):
+        self.statuses = select.values; await interaction.response.defer()
+
+    @ui.button(label="Enter Metrics & Execute", style=discord.ButtonStyle.green)
+    async def execute_search(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.send_modal(SearchQueryModal(self))
+
+class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
+    query = ui.TextInput(label='Query Keywords', placeholder='Title or description...', required=False)
+    min_votes = ui.TextInput(label='Min Votes', placeholder='0', default='0', required=False)
+    max_votes = ui.TextInput(label='Max Votes', placeholder='9999', required=False)
+    min_comments = ui.TextInput(label='Min Comments', placeholder='0', default='0', required=False)
     date_range = ui.TextInput(label='Date Range (YYYY-MM-DD to YYYY-MM-DD)', placeholder='e.g. 2024-01-01 to 2024-12-31', required=False)
-    comments = ui.TextInput(label='Min Comments', placeholder='0', required=False)
+
+    def __init__(self, filter_view):
+        super().__init__(); self.filter_view = filter_view
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        valkey = get_valkey_client(); res = []; cursor = 0; q = self.query.value.lower()
-
-        # Parse filters
-        filt_list = [f.strip().lower() for f in self.filters.value.split(",")] if self.filters.value else []
-
-        # Parse votes
-        min_v = 0; max_v = 999999
-        if self.votes.value and "-" in self.votes.value:
-            try: v_parts = self.votes.value.split("-"); min_v = int(v_parts[0]); max_v = int(v_parts[1])
-            except: pass
-
-        # Parse date range
+        valkey = self.filter_view.bot.valkey; res = []; cursor = 0; q = self.query.value.lower()
+        min_v = int(self.min_votes.value) if self.min_votes.value.isdigit() else 0
+        max_v = int(self.max_votes.value) if self.max_votes.value.isdigit() else 999999
+        min_c = int(self.min_comments.value) if self.min_comments.value.isdigit() else 0
         min_ts = 0; max_ts = 2147483647
         if self.date_range.value and " to " in self.date_range.value:
             try:
@@ -112,27 +137,20 @@ class SearchModal(ui.Modal, title='Comprehensive Search'):
                 max_ts = int(datetime.strptime(d_parts[1].strip(), "%Y-%m-%d").timestamp())
             except: pass
 
-        min_c = int(self.comments.value) if self.comments.value.isdigit() else 0
-
         while True:
             cursor, data = await valkey.hscan("canny_search_index", cursor=cursor, count=100)
             for k, v in data.items():
                 p = json.loads(v)
-                if q in p['title'].lower() or q in p.get('details', '').lower():
-                    if filt_list:
-                        match_filt = False
-                        for f in filt_list:
-                            if f in p.get('board', '').lower() or f == p.get('status', '').lower():
-                                match_filt = True; break
-                        if not match_filt: continue
+                if not q or q in p['title'].lower() or q in p.get('details', '').lower():
+                    if self.filter_view.boards and not any(b in p['url'] for b in self.filter_view.boards): continue
+                    if self.filter_view.statuses and p.get('status', '').lower() not in self.filter_view.statuses: continue
                     vts = p.get('score', 0); cmt = p.get('comments', 0); crt = p.get('created', 0)
                     if vts < min_v or vts > max_v or cmt < min_c or crt < min_ts or crt > max_ts: continue
                     res.append(p)
             if cursor == 0 or len(res) > 500: break
-
         res.sort(key=lambda x: x.get('score', 0), reverse=True)
         if not res: return await interaction.followup.send("No results.", ephemeral=True)
-        view = SearchView(res, bot=interaction.client)
+        view = SearchView(res, bot=self.filter_view.bot)
         await interaction.followup.send("\n".join([f"[{r['title']}]({r['url']})" for r in res[:10]]), view=view, ephemeral=True)
 
 class MyBot(commands.Bot):
@@ -180,7 +198,8 @@ class MyBot(commands.Bot):
         urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)
         url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
         if not url: return await interaction.response.send_message("No URL.", ephemeral=True)
-        await self.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": url, "channel_id": interaction.channel_id}))
+        job = {"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}
+        await self.valkey.lpush("discord_jobs", json.dumps(job))
         await interaction.response.send_message("Checking...", ephemeral=True)
 
     async def post_indexed_hour(self, interaction: discord.Interaction, message: discord.Message):
@@ -194,8 +213,9 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-@bot.tree.command(name="search", description="Search Canny posts with Keywords, Board, Status, Votes, and Date Range")
-async def search(interaction: discord.Interaction): await interaction.response.send_modal(SearchModal())
+@bot.tree.command(name="search", description="Search Canny posts with interactive filters")
+async def search(interaction: discord.Interaction):
+    await interaction.response.send_message("Configure filters:", view=SearchFilterView(bot), ephemeral=True)
 
 @bot.tree.command(name="ping", description="Check Discord API latency")
 async def ping(interaction: discord.Interaction): await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
@@ -220,7 +240,13 @@ async def help_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(name="credit", description="View bot credits, hosting, and affiliation")
 async def credit(interaction: discord.Interaction):
-    msg = "**This bot is not affiliated with VRChat Inc.**\n\nHosted by [VRCβフォース](<https://discord.gg/XJHRXwd>) | [VRChat Group](<https://vrc.group/BETAJP.2222>).\nLocalization: [Google Sheet](<https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing>).\nOpen Source: [GitHub](<https://github.com/slord399/feedback_tracker/>).\nDonations: [X (formerly Twitter)](<https://x.com/slord399/creator-subscriptions/subscribe>) | [Ko-fi](<https://ko-fi.com/tony_lewis>) | [GitHub Sponsors](<https://github.com/sponsors/slord399/>)."
+    msg = (
+        "**This bot is not affiliated with VRChat Inc.**\n\n"
+        "Hosted by [VRCβフォース](<https://discord.gg/XJHRXwd>) | [VRChat Group](<https://vrc.group/BETAJP.2222>).\n"
+        "Localization: [Google Sheet](<https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing>).\n"
+        "Open Source: [GitHub](<https://github.com/slord399/feedback_tracker/>).\n"
+        "Donations: [X (formerly Twitter)](<https://x.com/slord399/creator-subscriptions/subscribe>) | [Ko-fi](<https://ko-fi.com/tony_lewis>) | [GitHub Sponsors](<https://github.com/sponsors/slord399/>)."
+    )
     await interaction.response.send_message(msg, ephemeral=True)
 
 @bot.tree.command(name="mode", description="Toggle Global or Local indexing mode")
@@ -268,13 +294,16 @@ async def update_localization(interaction: discord.Interaction, sheet_url: str):
     async with aiohttp.ClientSession() as session:
         async with session.get(csv_url) as resp:
             if resp.status == 200:
-                with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(await resp.text())
+                content = await resp.text()
+                with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(content)
                 bot.localizer.load(); await interaction.response.send_message("Updated.")
             else: await interaction.response.send_message(f"Failed. {resp.status}")
 
 @bot.tree.command(name="test_feed", description="Test embed rendering")
 async def test_feed(interaction: discord.Interaction, canny_url: str):
-    await interaction.response.defer(ephemeral=True); await bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id}))
+    await interaction.response.defer(ephemeral=True)
+    job = {"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}
+    await bot.valkey.lpush("discord_jobs", json.dumps(job))
     await interaction.followup.send("Test feed requested.")
 
 if __name__ == "__main__":

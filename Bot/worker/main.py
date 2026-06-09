@@ -76,8 +76,12 @@ class Worker:
                             await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid)
 
                 elif job["type"] == "check_status":
-                    embed = create_canny_embed(post)
-                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))})
+                    gid = job.get("guild_id")
+                    lang = "English"
+                    if gid:
+                        lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
+                    embed = create_canny_embed(post, lang=lang)
+                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
 
                 elif job["type"] in ["status_change", "vote_progress"]:
                     await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
