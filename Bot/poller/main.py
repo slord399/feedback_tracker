@@ -15,14 +15,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poller")
 
 async def discover_boards(valkey, limiter):
+    logger.info("Discovering boards...")
     await limiter.acquire()
     data = await fetch_canny_data("https://feedback.vrchat.com/")
-    if not data: return []
+    if not data:
+        logger.error("Failed to fetch boards data")
+        return []
     items = data.get("boards", {}).get("items", {})
     boards = []
     for k, v in items.items():
         boards.append({"id": v.get("_id"), "name": v.get("name"), "urlName": v.get("urlName"), "url": f"https://feedback.vrchat.com/{v.get('urlName')}"})
-    if boards: await valkey.set("canny_boards", json.dumps(boards))
+    if boards:
+        await valkey.set("canny_boards", json.dumps(boards))
+        logger.info(f"Discovered {len(boards)} boards")
     return boards
 
 def get_polling_interval(post):
@@ -61,11 +66,13 @@ async def poll_post(valkey, limiter, url, url_name):
     return post
 
 async def poller_loop():
+    logger.info("Poller started")
     valkey = get_valkey_client(); limiter = get_global_limiter(valkey)
     while True:
         try:
             boards = await discover_boards(valkey, limiter)
             indexed = await valkey.smembers("indexed_post_urls")
+            logger.info(f"Polling {len(indexed)} indexed posts...")
             for url in indexed:
                 parts = url.split("/")
                 if "p" in parts:

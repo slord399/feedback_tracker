@@ -5,6 +5,7 @@ import os
 import sys
 import aiohttp
 import discord
+discord.VoiceClient.warn_nacl = False
 import time
 import redis.asyncio as redis
 
