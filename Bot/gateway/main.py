@@ -213,8 +213,21 @@ async def ping(interaction: discord.Interaction): await interaction.response.sen
 
 @bot.tree.command(name="stats", description="View bot and indexing statistics")
 async def stats(interaction: discord.Interaction):
-    idx = await bot.valkey.scard("indexed_post_urls"); tot = await bot.valkey.hlen("canny_search_index")
-    await interaction.response.send_message(f"Stats: {tot} found, {idx} indexed.")
+    idx = await bot.valkey.scard("indexed_post_urls")
+    tot = await bot.valkey.hlen("canny_search_index")
+    this_month = time.strftime('%Y-%m')
+    status_changes = await bot.valkey.get(f"stats:status_change:{this_month}") or 0
+    vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0
+
+    msg = (
+        f"**Canny Bot Stats**\n"
+        f"Total Posts Discovered: {tot}\n"
+        f"Uniquely Indexed Posts: {idx}\n\n"
+        f"**Activity ({this_month})**\n"
+        f"Status Updates: {status_changes}\n"
+        f"Vote Milestones: {vote_reports}"
+    )
+    await interaction.response.send_message(msg)
 
 @bot.tree.command(name="help", description="Show available commands and usage info")
 async def help_cmd(interaction: discord.Interaction):

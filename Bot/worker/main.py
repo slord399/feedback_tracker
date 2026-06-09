@@ -59,30 +59,40 @@ class Worker:
 
                 if job["type"] == "index_confirm":
                     gid = job["guild_id"]; cid = job["channel_id"]
-                    # Auto archive
                     await archive_url(job["url"])
                     if job.get("original_message_id"): await self.purge_message(cid, job["original_message_id"], gid)
                     lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
                     await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
+
+                    # Notify all GLOBAL guilds
                     for oid in await get_active_guilds(self.valkey):
                         if str(oid) == str(gid): continue
                         cfg = await self.valkey.hgetall(f"guild_config:{oid}")
                         if cfg.get("mode") == "global" and cfg.get("status_channel"):
-                            oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Global User", "icon": None}, lang=cfg.get("language", "English"))
+                            # Requirements: "automagically indexed on that server and start tracking there too"
+                            await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
+                            oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Global Request", "icon": None}, lang=cfg.get("language", "English"))
                             await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid)
 
                 elif job["type"] == "check_status":
-                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [create_canny_embed(post).to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))})
+                    embed = create_canny_embed(post)
+                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))})
 
                 elif job["type"] in ["status_change", "vote_progress"]:
                     await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
                     for gid in await get_active_guilds(self.valkey):
-                        if await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"]):
-                            cfg = await self.valkey.hgetall(f"guild_config:{gid}")
-                            if cfg.get("status_channel"):
-                                emb = create_canny_embed(post, old_status=job.get("old_status"), lang=cfg.get("language", "English"))
-                                await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
+                        cfg = await self.valkey.hgetall(f"guild_config:{gid}")
+                        # Case 1: Post indexed specifically in this guild
+                        # Case 2: Guild is in global mode (tracks everything)
+                        if await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"]) or cfg.get("mode") == "global":
+                            chan = cfg.get("status_channel")
+                            if chan:
+                                # Ensure it gets indexed if in global mode
+                                if cfg.get("mode") == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
+                                lang = cfg.get("language") or "English"
+                                emb = create_canny_embed(post, old_status=job.get("old_status"), lang=lang)
+                                await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
             except redis.exceptions.TimeoutError: continue
             except Exception: logger.exception("Worker error")
 
