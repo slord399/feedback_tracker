@@ -13,6 +13,20 @@
      ```
 3. Run `docker-compose up -d --build`.
 
+## Scaling Capacity
+To increase the bot's capacity for handling more servers and high traffic, you can horizontally scale the `gateway` and `worker` services.
+
+### Scaling Gateway (Sharding)
+The gateway handles WebSocket connections to Discord. To scale it, you must increase the `TOTAL_SHARDS` count across all instances and assign a unique `SHARD_ID` to each.
+1. In `docker-compose.yml`, add new `gateway-X` services.
+2. Update `TOTAL_SHARDS` to the total number of gateway services you have.
+3. Set `SHARD_ID` to a unique number from `0` to `TOTAL_SHARDS - 1`.
+
+### Scaling Workers
+Workers consume jobs from Valkey and post to the Discord REST API.
+1. In `docker-compose.yml`, you can simply add more `worker-X` service definitions.
+2. Workers are stateless and will automatically load-balance jobs via Valkey's `BRPOP`.
+
 ## Upgrading
 1. Pull latest code.
 2. Run `docker-compose up -d --build` to recreate containers.
