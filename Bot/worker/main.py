@@ -6,6 +6,7 @@ import sys
 import aiohttp
 import discord
 import time
+import redis
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, get_active_guilds
@@ -43,7 +44,15 @@ class Worker:
     async def run(self):
         logger.info("Worker started")
         while True:
-            job_data = self.valkey.brpop("discord_jobs", timeout=5)
+            try:
+                job_data = self.valkey.brpop("discord_jobs", timeout=5)
+            except redis.exceptions.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(f"Valkey error: {e}")
+                await asyncio.sleep(1)
+                continue
+
             if not job_data: continue
             job = json.loads(job_data[1])
             try:
@@ -62,7 +71,6 @@ class Worker:
                         embed = create_canny_embed(post, user_info=user_info, lang=lang)
                         await self.send_request("POST", f"/channels/{channel_id}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, guild_id)
 
-                        # Global notification
                         active_guilds = get_active_guilds(self.valkey)
                         for other_id in active_guilds:
                             if str(other_id) == str(guild_id): continue

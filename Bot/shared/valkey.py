@@ -19,7 +19,12 @@ def get_valkey_client():
             host, port = node.split(":")
             startup_nodes.append(ClusterNode(host, int(port)))
 
-    return RedisCluster(startup_nodes=startup_nodes, decode_responses=True)
+    return RedisCluster(
+        startup_nodes=startup_nodes,
+        decode_responses=True,
+        socket_timeout=10,
+        socket_connect_timeout=5
+    )
 
 def register_guild(valkey, guild_id):
     valkey.sadd("active_guilds", str(guild_id))
