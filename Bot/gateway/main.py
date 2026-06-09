@@ -229,15 +229,51 @@ async def stats(interaction: discord.Interaction):
     )
     await interaction.response.send_message(msg)
 
-@bot.tree.command(name="help", description="Show available commands and usage info")
+@bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")
 async def help_cmd(interaction: discord.Interaction):
-    msg = "Commands: /stats, /search, /ping, /credit. Context Menu: Index this canny, Check canny status, Post what I indexed in hour."
-    if interaction.user.guild_permissions.manage_messages: msg += "\nAdmin: /mode, /set_status_channel, /set_react_channel, /set_language, /bulk_add"
-    await interaction.response.send_message(msg, ephemeral=True)
+    embed = discord.Embed(title="Canny Bot Help Article", color=discord.Color.blue())
 
-@bot.tree.command(name="credit", description="View bot credits and license")
+    general_cmds = (
+        "**/search**: Interactive search for Canny posts with board and status filters.\n"
+        "**/stats**: View total indexed posts and monthly activity metrics.\n"
+        "**/ping**: Check connection latency to Discord and Canny APIs.\n"
+        "**/credit**: View bot affiliation, hosting, and donation information."
+    )
+    embed.add_field(name="General Commands", value=general_cmds, inline=False)
+
+    context_cmds = (
+        "**Index this canny**: (Message Context Menu) Extracts a link and starts tracking it in this server.\n"
+        "**Check canny status**: (Message Context Menu) Shows current status and votes for a link.\n"
+        "**Post what I indexed in hour**: (Message Context Menu) Summarizes your recent indexing activity."
+    )
+    embed.add_field(name="User App Features", value=context_cmds, inline=False)
+
+    if interaction.user.guild_permissions.manage_messages:
+        admin_cmds = (
+            "**/mode**: Toggle between **Global** (auto-track trending posts) and **Local** (only manually indexed).\n"
+            "**/set_status_channel**: Designate where status updates and vote reports are posted.\n"
+            "**/set_react_channel**: Specify an additional channel for the bot to automatically index links from.\n"
+            "**/set_language**: Change the UI language for embeds in this server.\n"
+            "**/bulk_add**: Scrape the last 100 messages in a channel and index all found links."
+        )
+        embed.add_field(name="Administrative Commands", value=admin_cmds, inline=False)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="credit", description="View bot credits, hosting, and affiliation")
 async def credit(interaction: discord.Interaction):
-    await interaction.response.send_message("Bot by Jules. Inspired by Hackebein architecture. MIT License.", ephemeral=True)
+    msg = (
+        "**This bot is not affiliated with VRChat Inc.**\n\n"
+        "This bot is unofficially hosted by [VRCβフォース](https://discord.gg/XJHRXwd) "
+        "and is active in the [VRChat Group](https://vrc.group/BETAJP.2222).\n\n"
+        "Want to help with localization? [Check our Google Sheet](https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing).\n"
+        "If you want to host this bot on your server, please [create a ticket](https://discord.gg/XJHRXwd) at VRCβフォース.\n\n"
+        "This bot is [open source](https://github.com/slord399/feedback_tracker/).\n\n"
+        "**Support the Project**\n"
+        "Consider donating via [X (Subscriptions)](https://x.com/slord399/creator-subscriptions/subscribe), "
+        "[Ko-fi](https://ko-fi.com/tony_lewis), or [GitHub Sponsors](https://github.com/sponsors/slord399/)."
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
 
 @bot.tree.command(name="mode", description="Toggle Global or Local indexing mode for this guild")
 @app_commands.checks.has_permissions(manage_messages=True)
