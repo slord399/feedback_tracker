@@ -108,8 +108,10 @@ class SearchView(ui.View):
         view = ui.View(); view.add_item(GuildSelect(self.bot, self.bot.guilds, url))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
     async def update_msg(self, interaction):
-        start = self.page*10; end = start+10; msg = "\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
-        await interaction.response.edit_message(content=msg, view=self)
+        start = self.page*10; end = start+10
+        # Compact list with blank line between results, no embed
+        msg = "\n\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
+        await interaction.response.edit_message(content=msg, view=self, embeds=[])
 
 class SearchFilterView(ui.View):
     def __init__(self, bot):
@@ -178,7 +180,8 @@ class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
         res.sort(key=lambda x: x.get('score', 0), reverse=True)
         if not res: return await interaction.followup.send("No results.", ephemeral=True)
         view = SearchView(res, bot=self.filter_view.bot)
-        await interaction.followup.send("\n".join([f"[{r['title']}]({r['url']})" for r in res[:10]]), view=view, ephemeral=True)
+        msg = "\n\n".join([f"[{r['title']}]({r['url']})" for r in res[:10]])
+        await interaction.followup.send(msg, view=view, ephemeral=True, embeds=[])
 
 class MyBot(commands.Bot):
     def __init__(self):
