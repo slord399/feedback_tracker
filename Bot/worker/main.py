@@ -13,7 +13,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, get_active_guilds
 from Bot.shared.rate_limit import get_global_limiter, get_guild_limiter
 from Bot.worker.embeds import create_canny_embed, create_canny_view
-from Bot.shared.canny import fetch_canny_data, extract_post_from_data
+from Bot.shared.canny import fetch_canny_data, extract_post_from_data, archive_url
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
@@ -47,11 +47,9 @@ class Worker:
         logger.info("Worker started")
         while True:
             try:
-                # BRPOP is blocking but this is the asyncio version
                 res = await self.valkey.brpop("discord_jobs", timeout=5)
                 if not res: continue
                 job = json.loads(res[1])
-                # Ensure global rate limit before scraping
                 await self.global_limiter.acquire()
                 data = await fetch_canny_data(job["url"])
                 parts = job["url"].split("/")
@@ -61,6 +59,8 @@ class Worker:
 
                 if job["type"] == "index_confirm":
                     gid = job["guild_id"]; cid = job["channel_id"]
+                    # Auto archive
+                    await archive_url(job["url"])
                     if job.get("original_message_id"): await self.purge_message(cid, job["original_message_id"], gid)
                     lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)

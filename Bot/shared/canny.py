@@ -74,3 +74,16 @@ def extract_board_posts(data):
             for p in posts_list:
                 all_posts.append(p)
     return all_posts
+
+async def archive_url(url: str):
+    """
+    Requests Wayback Machine to archive the URL
+    """
+    archive_api = f"https://web.archive.org/save/{url}"
+    headers = {"User-Agent": "VRChatStatusBot/1.0"}
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(archive_api) as response:
+                return response.status
+    except Exception:
+        return None

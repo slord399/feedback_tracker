@@ -24,15 +24,6 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
     category_name = category.get("name", "None") if category else "None"
     if board: category_name = f"{board.get('name')} / {category_name}"
 
-    # Precise section formatting
-    # 1st section: text
-    # {blank line}
-    # 2nd section: Category in bold
-    # 3rd section: full name of category
-    # {blank line}
-    # 4th section: Status Created Votes headers
-    # 5th section: values
-
     current_status = post.get("status", "open")
     status_text = current_status
     if old_status and old_status != current_status:
@@ -44,30 +35,35 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
         created_display = f"<t:{int(dt.timestamp())}:R>"
     except: created_display = created_ts
 
-    votes = post.get("score", 0)
+    votes = str(post.get("score", 0))
+
+    # Precise section formatting with padding/alignment
+    # Using \t or multiple spaces for alignment
+    header = f"**{loc.get('status', lang)}**\t|\t**{loc.get('created', lang)}**\t|\t**{loc.get('votes', lang)}**"
+    values = f"{status_text}\t|\t{created_display}\t|\t{votes}"
 
     description = (
         f"{details}\n\n"
         f"**{loc.get('category', lang)}**\n"
         f"{category_name}\n\n"
-        f"**{loc.get('status', lang)}** | **{loc.get('created', lang)}** | **{loc.get('votes', lang)}**\n"
-        f"{status_text} | {created_display} | {votes}"
+        f"{header}\n"
+        f"{values}"
     )
 
     if old_status and old_status != current_status:
-        # "If in feed as status update... you don't need to post 1st section of text as it's known already."
         description = (
             f"**{loc.get('category', lang)}**\n"
             f"{category_name}\n\n"
-            f"**{loc.get('status', lang)}** | **{loc.get('created', lang)}** | **{loc.get('votes', lang)}**\n"
-            f"{status_text} | {created_display} | {votes}"
+            f"{header}\n"
+            f"{values}"
         )
 
     embed.description = description
 
-    if current_status.lower() in ["complete", "completed", "available in future release"]:
-        image_urls = post.get("imageURLs", [])
-        if image_urls: embed.set_thumbnail(url=image_urls[0])
+    # Image field instead of Thumbnail
+    image_urls = post.get("imageURLs", [])
+    if image_urls:
+        embed.set_image(url=image_urls[0])
 
     if user_info:
         footer_key = "indexed_by" if user_info.get("type") == "indexed" else "requested_by"
