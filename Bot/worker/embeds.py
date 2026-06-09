@@ -33,30 +33,17 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
 
     votes = str(post.get("score", 0))
 
-    # Refined alignment without code block markdown.
-    # We use bold headers and multiple spaces/tabs to simulate alignment.
-    # Note: Discord variable-width fonts make pixel-perfect alignment with spaces difficult.
-    # However, we'll try to provide a clean layout.
-    header = f"**{loc.get('status', lang)}**\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000**{loc.get('created', lang)}**\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000**{loc.get('votes', lang)}**"
-    values = f"{status_text}\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000{created_display}\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000{votes}"
-
-    description = (
-        f"{details}\n\n"
-        f"**{loc.get('category', lang)}**\n"
-        f"{category_name}\n\n"
-        f"{header}\n"
-        f"{values}"
-    )
-
+    # Using Embed Fields for perfect alignment
+    description = f"{details}\n\n**{loc.get('category', lang)}**\n{category_name}\n\n"
     if old_status and old_status != current_status:
-        description = (
-            f"**{loc.get('category', lang)}**\n"
-            f"{category_name}\n\n"
-            f"{header}\n"
-            f"{values}"
-        )
+         description = f"**{loc.get('category', lang)}**\n{category_name}\n\n"
 
     embed.description = description
+
+    # Add status, created, and votes as inline fields
+    embed.add_field(name=loc.get('status', lang), value=status_text, inline=True)
+    embed.add_field(name=loc.get('created', lang), value=created_display, inline=True)
+    embed.add_field(name=loc.get('votes', lang), value=votes, inline=True)
 
     image_urls = post.get("imageURLs", [])
     if image_urls: embed.set_image(url=image_urls[0])

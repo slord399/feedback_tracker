@@ -29,9 +29,21 @@ class GuildSelect(ui.Select):
 class ResultSelect(ui.Select):
     def __init__(self, posts):
         options = [discord.SelectOption(label=p['title'][:100], value=p['url']) for p in posts]
-        super().__init__(placeholder="Select a post to act on...", options=options)
+        super().__init__(placeholder="Select a post...", options=options)
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_url = self.values[0]; await interaction.response.defer()
+
+class LanguageSelect(ui.Select):
+    def __init__(self, valkey):
+        langs = ["English", "Deutsch", "Española", "François", "Italian", "polski", "Portuguese do Brazil", "русский", "中文（简体）", "中文（繁體）", "日本語", "한국어"]
+        options = [discord.SelectOption(label=l, value=l) for l in langs]
+        super().__init__(placeholder="Select language...", options=options)
+        self.valkey = valkey
+
+    async def callback(self, interaction: discord.Interaction):
+        lang = self.values[0]
+        await self.valkey.hset(f"guild_config:{interaction.guild_id}", "language", lang)
+        await interaction.response.edit_message(content=f"Language set to {lang}.", view=None)
 
 class SearchView(ui.View):
     def __init__(self, results, page=0, bot=None):
@@ -75,9 +87,9 @@ class SearchView(ui.View):
 class SearchFilterView(ui.View):
     def __init__(self, bot):
         super().__init__(); self.bot = bot
-        self.boards = []; self.statuses = []; self.category = ""; self.sort = 'votes'
+        self.boards = []; self.statuses = []
 
-    @ui.select(cls=ui.Select, placeholder="Select Boards (Multi)", min_values=0, max_values=5, options=[
+    @ui.select(cls=ui.Select, placeholder="Select Boards", min_values=0, max_values=5, options=[
         discord.SelectOption(label="Feature Requests", value="feature-requests"),
         discord.SelectOption(label="Bug Reports", value="bug-reports"),
         discord.SelectOption(label="SDK Bug Reports", value="sdk-bug-reports"),
@@ -87,30 +99,36 @@ class SearchFilterView(ui.View):
     async def select_boards(self, interaction: discord.Interaction, select: ui.Select):
         self.boards = select.values; await interaction.response.defer()
 
-    @ui.select(cls=ui.Select, placeholder="Select Statuses (Multi)", min_values=0, max_values=5, options=[
+    @ui.select(cls=ui.Select, placeholder="Select Statuses", min_values=0, max_values=5, options=[
         discord.SelectOption(label="Open", value="open"),
         discord.SelectOption(label="Tracked", value="tracked"),
         discord.SelectOption(label="Planned", value="planned"),
         discord.SelectOption(label="In Progress", value="in-progress"),
-        discord.SelectOption(label="Complete", value="complete")
+        discord.SelectOption(label="Complete", value="complete"),
+        discord.SelectOption(label="Available", value="available")
     ])
     async def select_statuses(self, interaction: discord.Interaction, select: ui.Select):
         self.statuses = select.values; await interaction.response.defer()
 
-    @ui.button(label="Search Query & Execute", style=discord.ButtonStyle.green)
+    @ui.button(label="Enter Metrics & Execute", style=discord.ButtonStyle.green)
     async def execute_search(self, interaction: discord.Interaction, button: ui.Button):
-        modal = SearchQueryModal(self)
-        await interaction.response.send_modal(modal)
+        await interaction.response.send_modal(SearchQueryModal(self))
 
-class SearchQueryModal(ui.Modal, title='Enter Search Query'):
-    query = ui.TextInput(label='Query', placeholder='Keywords in title or description...', min_length=2)
+class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
+    query = ui.TextInput(label='Query Keywords', placeholder='Title or description...', min_length=2)
+    min_votes = ui.TextInput(label='Min Votes', placeholder='0', default='0', required=False)
+    max_votes = ui.TextInput(label='Max Votes', placeholder='9999', required=False)
+    min_comments = ui.TextInput(label='Min Comments', placeholder='0', default='0', required=False)
+
     def __init__(self, filter_view):
         super().__init__(); self.filter_view = filter_view
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        valkey = self.filter_view.bot.valkey
-        res = []; cursor = 0; q = self.query.value.lower()
+        valkey = self.filter_view.bot.valkey; res = []; cursor = 0; q = self.query.value.lower()
+        min_v = int(self.min_votes.value) if self.min_votes.value.isdigit() else 0
+        max_v = int(self.max_votes.value) if self.max_votes.value.isdigit() else 999999
+        min_c = int(self.min_comments.value) if self.min_comments.value.isdigit() else 0
         while True:
             cursor, data = await valkey.hscan("canny_search_index", cursor=cursor, count=100)
             for k, v in data.items():
@@ -118,9 +136,10 @@ class SearchQueryModal(ui.Modal, title='Enter Search Query'):
                 if q in p['title'].lower() or q in p.get('details', '').lower():
                     if self.filter_view.boards and not any(b in p['url'] for b in self.filter_view.boards): continue
                     if self.filter_view.statuses and p.get('status', '').lower() not in self.filter_view.statuses: continue
+                    vts = p.get('score', 0); cmt = p.get('comments', 0)
+                    if vts < min_v or vts > max_v or cmt < min_c: continue
                     res.append(p)
-            if cursor == 0 or len(res) > 300: break
-
+            if cursor == 0 or len(res) > 500: break
         res.sort(key=lambda x: x.get('score', 0), reverse=True)
         if not res: return await interaction.followup.send("No results.", ephemeral=True)
         view = SearchView(res, bot=self.filter_view.bot)
@@ -185,47 +204,47 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-@bot.tree.command(name="search")
+@bot.tree.command(name="search", description="Search Canny posts with interactive filters")
 async def search(interaction: discord.Interaction):
     await interaction.response.send_message("Configure filters:", view=SearchFilterView(bot), ephemeral=True)
 
-@bot.tree.command(name="ping")
+@bot.tree.command(name="ping", description="Check Discord API latency")
 async def ping(interaction: discord.Interaction): await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
-@bot.tree.command(name="stats")
+@bot.tree.command(name="stats", description="View bot and indexing statistics")
 async def stats(interaction: discord.Interaction):
     idx = await bot.valkey.scard("indexed_post_urls"); tot = await bot.valkey.hlen("canny_search_index")
     await interaction.response.send_message(f"Stats: {tot} found, {idx} indexed.")
 
-@bot.tree.command(name="help")
+@bot.tree.command(name="help", description="Show available commands and usage info")
 async def help_cmd(interaction: discord.Interaction):
     msg = "Commands: /stats, /search, /ping, /credit. Context Menu: Index this canny, Check canny status, Post what I indexed in hour."
     if interaction.user.guild_permissions.manage_messages: msg += "\nAdmin: /mode, /set_status_channel, /set_react_channel, /set_language, /bulk_add"
     await interaction.response.send_message(msg, ephemeral=True)
 
-@bot.tree.command(name="credit")
+@bot.tree.command(name="credit", description="View bot credits and license")
 async def credit(interaction: discord.Interaction):
-    await interaction.response.send_message("This bot is not affiliated with VRChat Inc. License: MIT. Inspired by Hackebein.", ephemeral=True)
+    await interaction.response.send_message("Bot by Jules. Inspired by Hackebein architecture. MIT License.", ephemeral=True)
 
-@bot.tree.command(name="mode")
+@bot.tree.command(name="mode", description="Toggle Global or Local indexing mode for this guild")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def mode(interaction: discord.Interaction, mode: str):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "mode", mode.lower()); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message(f"Mode: {mode}")
 
-@bot.tree.command(name="set_status_channel")
+@bot.tree.command(name="set_status_channel", description="Set the channel where Canny status updates will be posted")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_status_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "status_channel", str(channel.id)); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("Status channel set.")
 
-@bot.tree.command(name="set_react_channel")
+@bot.tree.command(name="set_react_channel", description="Set an additional channel for the bot to listen for Canny URLs")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_react_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "react_channel", str(channel.id)); await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("React channel set.")
 
-@bot.tree.command(name="bulk_add")
+@bot.tree.command(name="bulk_add", description="Bulk index all Canny URLs found in the last 100 messages of this channel")
 @app_commands.checks.has_permissions(manage_messages=True)
 async def bulk_add(interaction: discord.Interaction):
     await interaction.response.defer(); found = 0
@@ -236,13 +255,13 @@ async def bulk_add(interaction: discord.Interaction):
                 await bot.valkey.sadd("indexed_post_urls", u); await bot.valkey.sadd(f"guild_indexed_posts:{interaction.guild_id}", u); found += 1
     await interaction.followup.send(f"Added {found} URLs.")
 
-@bot.tree.command(name="set_language")
+@bot.tree.command(name="set_language", description="Change the UI language for bot embeds in this guild")
 @app_commands.checks.has_permissions(manage_messages=True)
-async def set_language(interaction: discord.Interaction, lang: str):
-    await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "language", lang); await register_guild(bot.valkey, interaction.guild_id)
-    await interaction.response.send_message(f"Language: {lang}")
+async def set_language(interaction: discord.Interaction):
+    view = ui.View(); view.add_item(LanguageSelect(bot.valkey))
+    await interaction.response.send_message("Select language:", view=view, ephemeral=True)
 
-@bot.tree.command(name="update_localization")
+@bot.tree.command(name="update_localization", description="Sync bot localization with a Google Sheet CSV")
 async def update_localization(interaction: discord.Interaction, sheet_url: str):
     if interaction.guild_id != 590756888254349315: return await interaction.response.send_message("No permission.")
     base = sheet_url.split("/edit")[0]; gid = None
@@ -256,10 +275,11 @@ async def update_localization(interaction: discord.Interaction, sheet_url: str):
                 bot.localizer.load(); await interaction.response.send_message("Updated.")
             else: await interaction.response.send_message(f"Failed. {resp.status}")
 
-@bot.tree.command(name="test_feed")
-async def test_feed(interaction: discord.Interaction, url: str):
-    if interaction.guild_id != 590756888254349315: return await interaction.response.send_message("No.")
-    data = await fetch_canny_data(url); await interaction.response.send_message("Success!" if data else "Failed.")
+@bot.tree.command(name="test_feed", description="Test Canny embed rendering for a specific URL")
+async def test_feed(interaction: discord.Interaction, canny_url: str):
+    await interaction.response.defer(ephemeral=True)
+    await bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id}))
+    await interaction.followup.send("Test feed requested.")
 
 if __name__ == "__main__":
     t = os.getenv("DISCORD_TOKEN")

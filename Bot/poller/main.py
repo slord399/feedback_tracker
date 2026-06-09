@@ -61,6 +61,7 @@ async def poll_board_recursive(valkey, limiter, board):
             score = full_post.get("score", 0)
             status = full_post.get("status", "open")
             details = full_post.get("details", "")
+            comments = full_post.get("commentCount", 0)
             p_url = f"https://feedback.vrchat.com/{board['urlName']}/p/{uname}"
 
             await valkey.hset("canny_search_index", uname, json.dumps({
@@ -69,6 +70,7 @@ async def poll_board_recursive(valkey, limiter, board):
                 "url": p_url,
                 "score": score,
                 "status": status,
+                "comments": comments,
                 "board": board["name"]
             }))
             total_indexed += 1
