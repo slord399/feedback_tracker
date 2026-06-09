@@ -60,10 +60,12 @@ async def poll_board_recursive(valkey, limiter, board):
             title = full_post.get("title") or uname
             score = full_post.get("score", 0)
             status = full_post.get("status", "open")
+            details = full_post.get("details", "")
             p_url = f"https://feedback.vrchat.com/{board['urlName']}/p/{uname}"
 
             await valkey.hset("canny_search_index", uname, json.dumps({
                 "title": title,
+                "details": details,
                 "url": p_url,
                 "score": score,
                 "status": status,

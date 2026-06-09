@@ -28,36 +28,36 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
     created_ts = post.get("created")
     try:
         dt = datetime.fromisoformat(created_ts.replace("Z", "+00:00"))
-        # Using a relative timestamp for display, but for alignment in code block we'll use a string
-        created_display = dt.strftime("%Y-%m-%d")
+        created_display = f"<t:{int(dt.timestamp())}:R>"
     except: created_display = created_ts
 
     votes = str(post.get("score", 0))
 
-    # Improved alignment using a formatted table in a code block
-    # Header: 20 chars for Status, 15 for Created, 10 for Votes
-    header = f"{loc.get('status', lang):<20} | {loc.get('created', lang):^15} | {loc.get('votes', lang):>10}"
-    divider = "-" * len(header)
-    row = f"{status_text[:20]:<20} | {created_display:^15} | {votes:>10}"
-    table = f"```\n{header}\n{divider}\n{row}\n```"
+    # Refined alignment without code block markdown.
+    # We use bold headers and multiple spaces/tabs to simulate alignment.
+    # Note: Discord variable-width fonts make pixel-perfect alignment with spaces difficult.
+    # However, we'll try to provide a clean layout.
+    header = f"**{loc.get('status', lang)}**\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000**{loc.get('created', lang)}**\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000**{loc.get('votes', lang)}**"
+    values = f"{status_text}\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000{created_display}\u2000\u2000\u2000\u2000|\u2000\u2000\u2000\u2000{votes}"
 
     description = (
         f"{details}\n\n"
         f"**{loc.get('category', lang)}**\n"
         f"{category_name}\n\n"
-        f"{table}"
+        f"{header}\n"
+        f"{values}"
     )
 
     if old_status and old_status != current_status:
         description = (
             f"**{loc.get('category', lang)}**\n"
             f"{category_name}\n\n"
-            f"{table}"
+            f"{header}\n"
+            f"{values}"
         )
 
     embed.description = description
 
-    # Image field (Image URL) instead of Thumbnail
     image_urls = post.get("imageURLs", [])
     if image_urls: embed.set_image(url=image_urls[0])
 

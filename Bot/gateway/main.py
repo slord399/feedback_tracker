@@ -63,7 +63,7 @@ class SearchView(ui.View):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
         lgid = await self.bot.valkey.get(f"last_index_selection:{interaction.user.id}")
         if lgid:
-            gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", self.selected_url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", self.selected_url)
+            gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", self.selected_url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", self.selected_url); await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{self.selected_url}")
             await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": self.selected_url, "guild_id": gid, "channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url)}))
             return await interaction.response.send_message("Indexed!", ephemeral=True)
         view = ui.View(); view.add_item(GuildSelect(self.bot.guilds, self.selected_url))
@@ -72,36 +72,58 @@ class SearchView(ui.View):
         start = self.page*10; end = start+10; msg = "\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
         await interaction.response.edit_message(content=msg, view=self)
 
-class SearchModal(ui.Modal, title='Search Canny'):
-    query = ui.TextInput(label='Search Query', placeholder='Title or keywords...', min_length=2)
-    board = ui.TextInput(label='Board', placeholder='e.g. Bug Reports', required=False)
-    status = ui.TextInput(label='Status', placeholder='e.g. open, tracked, complete', required=False)
-    category = ui.TextInput(label='Category', placeholder='e.g. SDK', required=False)
-    sort = ui.TextInput(label='Sort By (votes/new)', placeholder='votes', default='votes', required=False)
+class SearchFilterView(ui.View):
+    def __init__(self, bot):
+        super().__init__(); self.bot = bot
+        self.boards = []; self.statuses = []; self.category = ""; self.sort = 'votes'
+
+    @ui.select(cls=ui.Select, placeholder="Select Boards (Multi)", min_values=0, max_values=5, options=[
+        discord.SelectOption(label="Feature Requests", value="feature-requests"),
+        discord.SelectOption(label="Bug Reports", value="bug-reports"),
+        discord.SelectOption(label="SDK Bug Reports", value="sdk-bug-reports"),
+        discord.SelectOption(label="Udon", value="udon"),
+        discord.SelectOption(label="Open Beta", value="open-beta")
+    ])
+    async def select_boards(self, interaction: discord.Interaction, select: ui.Select):
+        self.boards = select.values; await interaction.response.defer()
+
+    @ui.select(cls=ui.Select, placeholder="Select Statuses (Multi)", min_values=0, max_values=5, options=[
+        discord.SelectOption(label="Open", value="open"),
+        discord.SelectOption(label="Tracked", value="tracked"),
+        discord.SelectOption(label="Planned", value="planned"),
+        discord.SelectOption(label="In Progress", value="in-progress"),
+        discord.SelectOption(label="Complete", value="complete")
+    ])
+    async def select_statuses(self, interaction: discord.Interaction, select: ui.Select):
+        self.statuses = select.values; await interaction.response.defer()
+
+    @ui.button(label="Search Query & Execute", style=discord.ButtonStyle.green)
+    async def execute_search(self, interaction: discord.Interaction, button: ui.Button):
+        modal = SearchQueryModal(self)
+        await interaction.response.send_modal(modal)
+
+class SearchQueryModal(ui.Modal, title='Enter Search Query'):
+    query = ui.TextInput(label='Query', placeholder='Keywords in title or description...', min_length=2)
+    def __init__(self, filter_view):
+        super().__init__(); self.filter_view = filter_view
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        valkey = get_valkey_client(); res = []; cursor = 0
-        q = self.query.value.lower(); b = self.board.value.lower() if self.board.value else None
-        s = self.status.value.lower() if self.status.value else None
-        c = self.category.value.lower() if self.category.value else None
-
+        valkey = self.filter_view.bot.valkey
+        res = []; cursor = 0; q = self.query.value.lower()
         while True:
             cursor, data = await valkey.hscan("canny_search_index", cursor=cursor, count=100)
             for k, v in data.items():
                 p = json.loads(v)
-                if q in p['title'].lower():
-                    if b and b not in p.get('board', '').lower(): continue
-                    if s and s != p.get('status', '').lower(): continue
-                    # Category filter might need more indexing in poller, but for now check if present
+                if q in p['title'].lower() or q in p.get('details', '').lower():
+                    if self.filter_view.boards and not any(b in p['url'] for b in self.filter_view.boards): continue
+                    if self.filter_view.statuses and p.get('status', '').lower() not in self.filter_view.statuses: continue
                     res.append(p)
             if cursor == 0 or len(res) > 300: break
 
-        if self.sort.value.lower() == 'votes': res.sort(key=lambda x: x.get('score', 0), reverse=True)
-        else: res.sort(key=lambda x: x.get('url', ''), reverse=True) # Sort by URL as proxy for ID/age
-
+        res.sort(key=lambda x: x.get('score', 0), reverse=True)
         if not res: return await interaction.followup.send("No results.", ephemeral=True)
-        view = SearchView(res, bot=interaction.client)
+        view = SearchView(res, bot=self.filter_view.bot)
         await interaction.followup.send("\n".join([f"[{r['title']}]({r['url']})" for r in res[:10]]), view=view, ephemeral=True)
 
 class MyBot(commands.Bot):
@@ -164,7 +186,8 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 @bot.tree.command(name="search")
-async def search(interaction: discord.Interaction): await interaction.response.send_modal(SearchModal())
+async def search(interaction: discord.Interaction):
+    await interaction.response.send_message("Configure filters:", view=SearchFilterView(bot), ephemeral=True)
 
 @bot.tree.command(name="ping")
 async def ping(interaction: discord.Interaction): await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
@@ -182,7 +205,7 @@ async def help_cmd(interaction: discord.Interaction):
 
 @bot.tree.command(name="credit")
 async def credit(interaction: discord.Interaction):
-    await interaction.response.send_message("Bot by Jules. Inspired by Hackebein architecture. MIT License.", ephemeral=True)
+    await interaction.response.send_message("This bot is not affiliated with VRChat Inc. License: MIT. Inspired by Hackebein.", ephemeral=True)
 
 @bot.tree.command(name="mode")
 @app_commands.checks.has_permissions(manage_messages=True)
@@ -221,14 +244,17 @@ async def set_language(interaction: discord.Interaction, lang: str):
 
 @bot.tree.command(name="update_localization")
 async def update_localization(interaction: discord.Interaction, sheet_url: str):
-    if interaction.guild_id != 590756888254349315: return await interaction.response.send_message("No.")
-    csv_url = sheet_url.replace("/edit#gid=", "/export?format=csv&gid=")
+    if interaction.guild_id != 590756888254349315: return await interaction.response.send_message("No permission.")
+    base = sheet_url.split("/edit")[0]; gid = None
+    if "gid=" in sheet_url: gid = sheet_url.split("gid=")[1].split("&")[0]
+    csv_url = f"{base}/export?format=csv";
+    if gid: csv_url += f"&gid={gid}"
     async with aiohttp.ClientSession() as session:
         async with session.get(csv_url) as resp:
             if resp.status == 200:
-                with open("Locale/template.csv", "w") as f: f.write(await resp.text())
+                with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(await resp.text())
                 bot.localizer.load(); await interaction.response.send_message("Updated.")
-            else: await interaction.response.send_message("Failed.")
+            else: await interaction.response.send_message(f"Failed. {resp.status}")
 
 @bot.tree.command(name="test_feed")
 async def test_feed(interaction: discord.Interaction, url: str):
