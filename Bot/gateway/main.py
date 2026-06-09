@@ -12,6 +12,8 @@ from Bot.shared.canny import fetch_canny_data, extract_post_from_data
 
 logging.basicConfig(level=logging.INFO); logger = logging.getLogger("gateway")
 
+SHEET_URL = "https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing"
+
 class GuildSelect(ui.Select):
     def __init__(self, guilds, canny_url, message_id=None):
         options = [discord.SelectOption(label=g.name, value=str(g.id)) for g in guilds[:25]]
@@ -57,7 +59,7 @@ class SearchView(ui.View):
         prev_btn.callback = self.prev; self.add_item(prev_btn)
         next_btn = ui.Button(label="Next", style=discord.ButtonStyle.grey, disabled=(end >= len(self.results)))
         next_btn.callback = self.next; self.add_item(next_btn)
-        post_btn = ui.Button(label="Post Embed", style=discord.ButtonStyle.blue)
+        post_btn = ui.Button(label="Post Embed", style=discord.ButtonStyle.primary)
         post_btn.callback = self.post_as_embed; self.add_item(post_btn)
         index_btn = ui.Button(label="Index", style=discord.ButtonStyle.green)
         index_btn.callback = self.index_selected; self.add_item(index_btn)
@@ -165,6 +167,9 @@ class MyBot(commands.Bot):
         self.tree.add_command(app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour))
         if self.shard_id is None or self.shard_id == 0: await self.tree.sync()
         self.update_activity.start()
+        self.auto_sync_localization.start()
+        # Initial sync
+        asyncio.create_task(self.sync_localization())
 
     @tasks.loop(minutes=5)
     async def update_activity(self):
@@ -172,6 +177,30 @@ class MyBot(commands.Bot):
             idx = await self.valkey.scard("indexed_post_urls"); tot = await self.valkey.hlen("canny_search_index")
             await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="feedback.vrchat.com", state="Tracking", details=f"{idx} of {tot} indexed"))
         except: pass
+
+    @tasks.loop(hours=1)
+    async def auto_sync_localization(self):
+        await self.sync_localization()
+
+    async def sync_localization(self):
+        try:
+            base = SHEET_URL.split("/edit")[0]
+            gid = SHEET_URL.split("gid=")[1].split("&")[0] if "gid=" in SHEET_URL else None
+            csv_url = f"{base}/export?format=csv"
+            if gid: csv_url += f"&gid={gid}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(csv_url) as resp:
+                    if resp.status == 200:
+                        content = await resp.text()
+                        with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(content)
+                        self.localizer.load()
+                        logger.info("Localization synced from Google Sheet")
+                        return True
+                    else:
+                        logger.error(f"Failed to sync localization: HTTP {resp.status}")
+        except Exception as e:
+            logger.exception("Localization sync error")
+        return False
 
     async def on_message(self, message):
         if message.author.bot or not message.guild: return
@@ -285,19 +314,10 @@ async def set_language(interaction: discord.Interaction):
     await interaction.response.send_message("Select language:", view=view, ephemeral=True)
 
 @bot.tree.command(name="update_localization", description="Sync localization from Google Sheet")
-async def update_localization(interaction: discord.Interaction, sheet_url: str):
+async def update_localization(interaction: discord.Interaction):
     if interaction.guild_id != 590756888254349315: return await interaction.response.send_message("No permission.")
-    base = sheet_url.split("/edit")[0]; gid = None
-    if "gid=" in sheet_url: gid = sheet_url.split("gid=")[1].split("&")[0]
-    csv_url = f"{base}/export?format=csv";
-    if gid: csv_url += f"&gid={gid}"
-    async with aiohttp.ClientSession() as session:
-        async with session.get(csv_url) as resp:
-            if resp.status == 200:
-                content = await resp.text()
-                with open("Locale/template.csv", "w", encoding="utf-8") as f: f.write(content)
-                bot.localizer.load(); await interaction.response.send_message("Updated.")
-            else: await interaction.response.send_message(f"Failed. {resp.status}")
+    success = await bot.sync_localization()
+    await interaction.response.send_message("Updated." if success else "Failed.")
 
 @bot.tree.command(name="test_feed", description="Test embed rendering")
 async def test_feed(interaction: discord.Interaction, canny_url: str):
