@@ -15,9 +15,9 @@ logging.basicConfig(level=logging.INFO); logger = logging.getLogger("gateway")
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing"
 
-# Support User Apps in DMs and Guilds
-INTEGRATION_TYPES = {discord.IntegrationType.guild_install, discord.IntegrationType.user_install}
-CONTEXTS = {discord.InteractionContextType.guild, discord.InteractionContextType.bot_dm, discord.InteractionContextType.private_channel}
+# Support User Apps in DMs and Guilds using correct discord.py 2.x Enums
+ALLOWED_INSTALLS = app_commands.AppInstallationType(guild=True, user=True)
+ALLOWED_CONTEXTS = app_commands.AppCommandContext(guild=True, dm_channel=True, private_channel=True)
 
 class GuildSelect(ui.Select):
     def __init__(self, bot, guilds, canny_url, message_id=None):
@@ -168,10 +168,18 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
-        # Context Menu Commands
-        self.tree.add_command(app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny), contexts=CONTEXTS, extras={'integration_types': INTEGRATION_TYPES})
-        self.tree.add_command(app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status), contexts=CONTEXTS, extras={'integration_types': INTEGRATION_TYPES})
-        self.tree.add_command(app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour), contexts=CONTEXTS, extras={'integration_types': INTEGRATION_TYPES})
+        # Context Menu Commands with correct attributes
+        cmd_index = app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny)
+        cmd_index.allowed_contexts = ALLOWED_CONTEXTS; cmd_index.allowed_installs = ALLOWED_INSTALLS
+        self.tree.add_command(cmd_index)
+
+        cmd_status = app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status)
+        cmd_status.allowed_contexts = ALLOWED_CONTEXTS; cmd_status.allowed_installs = ALLOWED_INSTALLS
+        self.tree.add_command(cmd_status)
+
+        cmd_hour = app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour)
+        cmd_hour.allowed_contexts = ALLOWED_CONTEXTS; cmd_hour.allowed_installs = ALLOWED_INSTALLS
+        self.tree.add_command(cmd_hour)
 
         if self.shard_id is None or self.shard_id == 0:
             await self.tree.sync()
@@ -237,7 +245,8 @@ class MyBot(commands.Bot):
         urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)
         url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
         if not url: return await interaction.response.send_message("No URL.", ephemeral=True)
-        job = {"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}
+        gid = interaction.guild_id if interaction.guild else None
+        job = {"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": gid}
         await self.valkey.lpush("discord_jobs", json.dumps(job))
         await interaction.response.send_message("Checking...", ephemeral=True)
 
@@ -342,7 +351,8 @@ async def update_localization(interaction: discord.Interaction):
 @bot.tree.command(name="test_feed", description="Test embed rendering")
 async def test_feed(interaction: discord.Interaction, canny_url: str):
     await interaction.response.defer(ephemeral=True)
-    job = {"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}
+    gid = interaction.guild_id if interaction.guild else None
+    job = {"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id, "guild_id": gid}
     await bot.valkey.lpush("discord_jobs", json.dumps(job))
     await interaction.followup.send("Test feed requested.")
 
