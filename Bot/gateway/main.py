@@ -30,10 +30,8 @@ class ResultSelect(ui.Select):
     def __init__(self, posts):
         options = [discord.SelectOption(label=p['title'][:100], value=p['url']) for p in posts]
         super().__init__(placeholder="Select a post to act on...", options=options)
-
     async def callback(self, interaction: discord.Interaction):
-        self.view.selected_url = self.values[0]
-        await interaction.response.defer()
+        self.view.selected_url = self.values[0]; await interaction.response.defer()
 
 class SearchView(ui.View):
     def __init__(self, results, page=0, bot=None):
@@ -42,74 +40,69 @@ class SearchView(ui.View):
 
     def update_components(self):
         self.clear_items()
-        start = self.page * 10
-        end = start + 10
-        current_posts = self.results[start:end]
-        if current_posts:
-            self.add_item(ResultSelect(current_posts))
-
+        start = self.page * 10; end = start + 10; current_posts = self.results[start:end]
+        if current_posts: self.add_item(ResultSelect(current_posts))
         prev_btn = ui.Button(label="Prev", style=discord.ButtonStyle.grey, disabled=(self.page == 0))
-        prev_btn.callback = self.prev
-        self.add_item(prev_btn)
-
+        prev_btn.callback = self.prev; self.add_item(prev_btn)
         next_btn = ui.Button(label="Next", style=discord.ButtonStyle.grey, disabled=(end >= len(self.results)))
-        next_btn.callback = self.next
-        self.add_item(next_btn)
-
-        post_btn = ui.Button(label="Post as Embed", style=discord.ButtonStyle.blue)
-        post_btn.callback = self.post_as_embed
-        self.add_item(post_btn)
-
+        next_btn.callback = self.next; self.add_item(next_btn)
+        post_btn = ui.Button(label="Post Embed", style=discord.ButtonStyle.blue)
+        post_btn.callback = self.post_as_embed; self.add_item(post_btn)
         index_btn = ui.Button(label="Index", style=discord.ButtonStyle.green)
-        index_btn.callback = self.index_selected
-        self.add_item(index_btn)
+        index_btn.callback = self.index_selected; self.add_item(index_btn)
 
     async def prev(self, interaction: discord.Interaction):
         self.page = max(0, self.page - 1); self.update_components(); await self.update_msg(interaction)
-
     async def next(self, interaction: discord.Interaction):
         self.page = min((len(self.results)-1)//10, self.page + 1); self.update_components(); await self.update_msg(interaction)
-
     async def post_as_embed(self, interaction: discord.Interaction):
-        if not self.selected_url: return await interaction.response.send_message("Please select a post first.", ephemeral=True)
+        if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
         await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": self.selected_url, "channel_id": interaction.channel_id}))
-        await interaction.response.send_message("Posting embed...", ephemeral=True)
-
+        await interaction.response.send_message("Posting...", ephemeral=True)
     async def index_selected(self, interaction: discord.Interaction):
-        if not self.selected_url: return await interaction.response.send_message("Please select a post first.", ephemeral=True)
-        # Check cooldown
+        if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
         lgid = await self.bot.valkey.get(f"last_index_selection:{interaction.user.id}")
         if lgid:
             gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", self.selected_url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", self.selected_url)
             await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": self.selected_url, "guild_id": gid, "channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url)}))
-            return await interaction.response.send_message("Indexed automatically!", ephemeral=True)
-
+            return await interaction.response.send_message("Indexed!", ephemeral=True)
         view = ui.View(); view.add_item(GuildSelect(self.bot.guilds, self.selected_url))
-        await interaction.response.send_message("Select server to index to:", view=view, ephemeral=True)
-
+        await interaction.response.send_message("Select server:", view=view, ephemeral=True)
     async def update_msg(self, interaction):
         start = self.page*10; end = start+10; msg = "\n".join([f"[{r['title']}]({r['url']})" for r in self.results[start:end]])
         await interaction.response.edit_message(content=msg, view=self)
 
 class SearchModal(ui.Modal, title='Search Canny'):
-    query = ui.TextInput(label='Search Query', placeholder='Enter title or keywords...', min_length=2)
-    board_filter = ui.TextInput(label='Board Filter (Optional)', placeholder='e.g. Bug Reports', required=False)
+    query = ui.TextInput(label='Search Query', placeholder='Title or keywords...', min_length=2)
+    board = ui.TextInput(label='Board', placeholder='e.g. Bug Reports', required=False)
+    status = ui.TextInput(label='Status', placeholder='e.g. open, tracked, complete', required=False)
+    category = ui.TextInput(label='Category', placeholder='e.g. SDK', required=False)
+    sort = ui.TextInput(label='Sort By (votes/new)', placeholder='votes', default='votes', required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        valkey = get_valkey_client()
-        res = []; cursor = 0; q = self.query.value.lower(); b_filt = self.board_filter.value.lower() if self.board_filter.value else None
+        valkey = get_valkey_client(); res = []; cursor = 0
+        q = self.query.value.lower(); b = self.board.value.lower() if self.board.value else None
+        s = self.status.value.lower() if self.status.value else None
+        c = self.category.value.lower() if self.category.value else None
+
         while True:
             cursor, data = await valkey.hscan("canny_search_index", cursor=cursor, count=100)
             for k, v in data.items():
                 p = json.loads(v)
                 if q in p['title'].lower():
-                    if not b_filt or b_filt in p.get('board', '').lower(): res.append(p)
-            if cursor == 0 or len(res) > 200: break
+                    if b and b not in p.get('board', '').lower(): continue
+                    if s and s != p.get('status', '').lower(): continue
+                    # Category filter might need more indexing in poller, but for now check if present
+                    res.append(p)
+            if cursor == 0 or len(res) > 300: break
+
+        if self.sort.value.lower() == 'votes': res.sort(key=lambda x: x.get('score', 0), reverse=True)
+        else: res.sort(key=lambda x: x.get('url', ''), reverse=True) # Sort by URL as proxy for ID/age
+
         if not res: return await interaction.followup.send("No results.", ephemeral=True)
-        view = SearchView(res, bot=interaction.client); start = 0; end = 10
-        msg = "\n".join([f"[{r['title']}]({r['url']})" for r in res[start:end]])
-        await interaction.followup.send(msg, view=view, ephemeral=True)
+        view = SearchView(res, bot=interaction.client)
+        await interaction.followup.send("\n".join([f"[{r['title']}]({r['url']})" for r in res[:10]]), view=view, ephemeral=True)
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -148,7 +141,7 @@ class MyBot(commands.Bot):
         if lgid:
             gid = int(lgid); await self.valkey.sadd("indexed_post_urls", url); await self.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
             await self.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id}))
-            return await interaction.response.send_message("Indexed automatically!", ephemeral=True)
+            return await interaction.response.send_message("Indexed!", ephemeral=True)
         view = ui.View(); view.add_item(GuildSelect(self.guilds, url, message.id))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
 
@@ -171,8 +164,7 @@ class MyBot(commands.Bot):
 bot = MyBot()
 
 @bot.tree.command(name="search")
-async def search(interaction: discord.Interaction):
-    await interaction.response.send_modal(SearchModal())
+async def search(interaction: discord.Interaction): await interaction.response.send_modal(SearchModal())
 
 @bot.tree.command(name="ping")
 async def ping(interaction: discord.Interaction): await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
@@ -181,6 +173,16 @@ async def ping(interaction: discord.Interaction): await interaction.response.sen
 async def stats(interaction: discord.Interaction):
     idx = await bot.valkey.scard("indexed_post_urls"); tot = await bot.valkey.hlen("canny_search_index")
     await interaction.response.send_message(f"Stats: {tot} found, {idx} indexed.")
+
+@bot.tree.command(name="help")
+async def help_cmd(interaction: discord.Interaction):
+    msg = "Commands: /stats, /search, /ping, /credit. Context Menu: Index this canny, Check canny status, Post what I indexed in hour."
+    if interaction.user.guild_permissions.manage_messages: msg += "\nAdmin: /mode, /set_status_channel, /set_react_channel, /set_language, /bulk_add"
+    await interaction.response.send_message(msg, ephemeral=True)
+
+@bot.tree.command(name="credit")
+async def credit(interaction: discord.Interaction):
+    await interaction.response.send_message("Bot by Jules. Inspired by Hackebein architecture. MIT License.", ephemeral=True)
 
 @bot.tree.command(name="mode")
 @app_commands.checks.has_permissions(manage_messages=True)
