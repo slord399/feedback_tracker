@@ -325,12 +325,12 @@ class MyBot(commands.Bot):
         cmd_hour.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_hour)
 
-        cmd_trending = app_commands.ContextMenu(name="Trending Canny", callback=self.ctx_trending)
+        cmd_trending = app_commands.ContextMenu(name="Check Trending Canny", callback=self.ctx_trending)
         cmd_trending.allowed_contexts = USER_APP_CONTEXTS
         cmd_trending.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_trending)
 
-        cmd_authors = app_commands.ContextMenu(name="Author Metrics", callback=self.ctx_authors)
+        cmd_authors = app_commands.ContextMenu(name="Check Canny Author Metrics", callback=self.ctx_authors)
         cmd_authors.allowed_contexts = USER_APP_CONTEXTS
         cmd_authors.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_authors)
