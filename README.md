@@ -13,7 +13,6 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 ## Commands
 - `/stats`: View global and server-specific activity metrics.
 - `/search`: Search Canny posts with interactive filters.
-- `/settings`: View current server configuration.
 - `/ping`: Check API and bot latencies.
 - `/credit`: Bot information and affiliation details.
 - `/help`: Detailed command guide and usage tips.
@@ -21,6 +20,7 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 ### Administrative Commands
 *These commands require the **Manage Messages** permission.*
 
+- `/settings`: View current server configuration, including mode and target channels.
 - `/mode`: Toggle between **Global** (track everything) and **Local** (track only what you index) modes.
 - `/set_status_channel`: Select the channel where status updates and notifications will be posted.
 - `/set_react_channel`: Designate a channel where the bot will automatically listen for and index Canny links.

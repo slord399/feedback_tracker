@@ -439,6 +439,7 @@ async def search(interaction: discord.Interaction, visibility: str = "ephemeral"
 @bot.tree.command(name="settings", description="View current server configuration")
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
+@app_commands.checks.has_permissions(manage_messages=True)
 async def settings(interaction: discord.Interaction):
     cfg = await bot.valkey.hgetall(f"guild_config:{interaction.guild_id}")
     mode = cfg.get("mode", "global").capitalize()
@@ -483,7 +484,7 @@ async def help_cmd(interaction: discord.Interaction):
     embed.add_field(name="General Commands", value="**/search**: Interactive search.\n**/stats**: Activity metrics.\n**/ping**: Latency check.\n**/credit**: Affiliation and donation info.", inline=False)
     embed.add_field(name="User App Features", value="**Index this canny**: Track link in server.\n**Check canny status**: Get status/votes.\n**Post what I indexed in hour**: Activity summary.", inline=False)
     if interaction.user and getattr(interaction.user, 'guild_permissions', None) and interaction.user.guild_permissions.manage_messages:
-        embed.add_field(name="Administrative Commands", value="**/mode**: Global vs Local.\n**/set_status_channel**: Post updates here.\n**/set_react_channel**: Auto-index links here.\n**/set_language**: Change UI language.\n**/bulk_add**: Scrape channel history.", inline=False)
+        embed.add_field(name="Administrative Commands", value="**/settings**: View current server config.\n**/mode**: Global vs Local.\n**/set_status_channel**: Post updates here.\n**/set_react_channel**: Auto-index links here.\n**/set_language**: Change UI language.\n**/bulk_add**: Scrape channel history.", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="credit", description="View bot credits, hosting, and affiliation")
