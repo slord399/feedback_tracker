@@ -88,15 +88,47 @@ async def poll_board_recursive(valkey, limiter, board):
             pid = full_post.get("_id")
             if pid:
                 old_json = await valkey.get(f"post_cache:{pid}")
+                author = full_post.get("author", {})
+                author_id = author.get("_id")
+                if author_id:
+                    await valkey.hset("metrics:author_names", author_id, author.get("name", "Unknown"))
+
                 if old_json:
                     old = json.loads(old_json)
+                    old_score = old.get("score", 0)
+                    old_comments = old.get("commentCount", 0)
+
+                    # Trending metrics
+                    delta = (score - old_score) + (comments - old_comments)
+                    if delta > 0:
+                        week_key = f"metrics:trending:week:{datetime.now().strftime('%Y-%W')}"
+                        month_key = f"metrics:trending:month:{datetime.now().strftime('%Y-%m')}"
+                        await valkey.zincrby(week_key, delta, uname)
+                        await valkey.zincrby(month_key, delta, uname)
+                        await valkey.expire(week_key, 604800 * 2)
+                        await valkey.expire(month_key, 2592000 * 2)
+
                     if old.get("status") != status:
                         await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": full_post, "old_status": old.get("status"), "url": p_url}))
-                    if (score // 25) > (old.get("score", 0) // 25):
+                        if author_id and status.lower() in ["complete", "completed", "available in future release"]:
+                            await valkey.zincrby("metrics:author_milestones", 1, author_id)
+
+                    if (score // 25) > (old_score // 25):
                         await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
-                elif score >= 25:
-                    await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
-                    await valkey.sadd("indexed_post_urls", p_url)
+                        if author_id:
+                            await valkey.zincrby("metrics:author_milestones", 1, author_id)
+                else:
+                    if author_id:
+                        await valkey.zincrby("metrics:author_posts", 1, author_id)
+                        milestones = score // 25
+                        if status.lower() in ["complete", "completed", "available in future release"]:
+                            milestones += 1
+                        if milestones > 0:
+                            await valkey.zincrby("metrics:author_milestones", milestones, author_id)
+
+                    if score >= 25:
+                        await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
+                        await valkey.sadd("indexed_post_urls", p_url)
 
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
                 if not await valkey.exists(f"next_poll:{p_url}"):
@@ -161,17 +193,48 @@ async def poll_post(valkey, limiter, url, url_name):
     pid = post.get("_id")
     old_json = await valkey.get(f"post_cache:{pid}")
     score = post.get("score", 0); status = post.get("status", "open")
+    comments = post.get("commentCount", 0)
+
+    author = post.get("author", {})
+    author_id = author.get("_id")
+    if author_id:
+        await valkey.hset("metrics:author_names", author_id, author.get("name", "Unknown"))
 
     if old_json:
         old = json.loads(old_json); old_score = old.get("score", 0); old_status = old.get("status")
+        old_comments = old.get("commentCount", 0)
+
+        # Trending metrics
+        delta = (score - old_score) + (comments - old_comments)
+        if delta > 0:
+            week_key = f"metrics:trending:week:{datetime.now().strftime('%Y-%W')}"
+            month_key = f"metrics:trending:month:{datetime.now().strftime('%Y-%m')}"
+            await valkey.zincrby(week_key, delta, url_name)
+            await valkey.zincrby(month_key, delta, url_name)
+            await valkey.expire(week_key, 604800 * 2)
+            await valkey.expire(month_key, 2592000 * 2)
+
         if old_status != status:
             await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": post, "old_status": old_status, "url": url}))
+            if author_id and status.lower() in ["complete", "completed", "available in future release"]:
+                await valkey.zincrby("metrics:author_milestones", 1, author_id)
         if (score // 25) > (old_score // 25):
             await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
             await valkey.sadd("indexed_post_urls", url)
-    elif score >= 25:
-        await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
-        await valkey.sadd("indexed_post_urls", url)
+            if author_id:
+                await valkey.zincrby("metrics:author_milestones", 1, author_id)
+    else:
+        if author_id:
+            await valkey.zincrby("metrics:author_posts", 1, author_id)
+            milestones = score // 25
+            if status.lower() in ["complete", "completed", "available in future release"]:
+                milestones += 1
+            if milestones > 0:
+                await valkey.zincrby("metrics:author_milestones", milestones, author_id)
+
+        if score >= 25:
+            await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+            await valkey.sadd("indexed_post_urls", url)
 
     await valkey.set(f"post_cache:{pid}", json.dumps(post))
     created_iso = post.get("created", ""); created_ts = 0
