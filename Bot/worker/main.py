@@ -96,7 +96,16 @@ class Worker:
                     for gid in await get_active_guilds(self.valkey):
                         cfg = await self.valkey.hgetall(f"guild_config:{gid}")
                         mode = cfg.get("mode", "global")
-                        if await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"]) or mode == "global":
+                        is_indexed = await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"])
+                        if is_indexed or mode == "global":
+                            if not is_indexed:
+                                status = post.get("status", "open").lower()
+                                score = post.get("score", 0)
+                                if status == "closed" and score <= 1:
+                                    continue
+                                if status == "needs more information" and score < 5:
+                                    continue
+
                             chan = cfg.get("status_channel")
                             if chan:
                                 if mode == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])

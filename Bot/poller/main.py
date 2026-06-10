@@ -101,6 +101,7 @@ async def poll_board_recursive(valkey, limiter, board):
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
                 if not await valkey.exists(f"next_poll:{p_url}"):
                     await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_post))
+                    await valkey.incr("stats:polling_queue_size")
 
             await valkey.hset("canny_search_index", uname, json.dumps({
                 "title": title,
@@ -208,7 +209,9 @@ async def poller_loop():
                         break
                     await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
                     full_p = await poll_post(valkey, limiter, p_url, uname)
-                    if full_p: await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_p))
+                    if full_p:
+                        await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_p))
+                        await valkey.incr("stats:polling_queue_size")
 
             async for key in valkey.scan_iter("next_poll:*"):
                 url = key.split("next_poll:")[1]
@@ -223,6 +226,7 @@ async def poller_loop():
                             fail_count = await valkey.incr(f"poll_fail_count:{url}")
                             if fail_count > 10:
                                 await valkey.delete(key)
+                                await valkey.decr("stats:polling_queue_size")
                                 await valkey.srem("indexed_post_urls", url)
                                 logger.warning(f"Stopped polling {url} after {fail_count} failures")
                             else:

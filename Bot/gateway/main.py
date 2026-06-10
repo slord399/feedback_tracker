@@ -313,7 +313,7 @@ class MyBot(commands.Bot):
         self.update_activity.start()
         logger.info("Setup hook complete.")
 
-    @tasks.loop(minutes=60)
+    @tasks.loop(minutes=30)
     async def update_activity(self):
         try:
             idx = await self.valkey.scard("indexed_post_urls")
@@ -467,9 +467,7 @@ async def stats(interaction: discord.Interaction):
     await interaction.response.defer()
     idx = await bot.valkey.scard("indexed_post_urls")
     tot = await bot.valkey.hlen("canny_search_index")
-    polled = 0
-    async for _ in bot.valkey.scan_iter("next_poll:*"):
-        polled += 1
+    polled = await bot.valkey.get("stats:polling_queue_size") or 0
     this_month = time.strftime('%Y-%m')
     status_changes = await bot.valkey.get(f"stats:status_change:{this_month}") or 0
     vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0

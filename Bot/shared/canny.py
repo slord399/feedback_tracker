@@ -52,24 +52,31 @@ async def fetch_canny_data(url: str, retry_fallback=True):
 def extract_post_from_data(data, post_url_name=None):
     if not data:
         return None
+
+    # URL names can be long or encoded
+    import urllib.parse
+    possible_names = {post_url_name, urllib.parse.unquote(post_url_name or "")} if post_url_name else {None}
+
     posts = data.get("posts", {})
     if isinstance(posts, dict):
         for board_id, board_posts in posts.items():
             if isinstance(board_posts, dict):
-                if post_url_name and post_url_name in board_posts:
-                    post_data = board_posts[post_url_name]
-                    if isinstance(post_data, dict) and "title" in post_data:
-                        return post_data
+                for name in possible_names:
+                    if name and name in board_posts:
+                        post_data = board_posts[name]
+                        if isinstance(post_data, dict) and "title" in post_data:
+                            return post_data
                 for key, val in board_posts.items():
-                    if isinstance(val, dict) and val.get("urlName") == post_url_name:
+                    if isinstance(val, dict) and val.get("urlName") in possible_names:
                         return val
     # Alternative structure for window.__data
     idea_post = data.get("ideaPost", {})
     if isinstance(idea_post, dict):
         for board_id, board_data in idea_post.items():
             if isinstance(board_data, dict):
-                if post_url_name in board_data:
-                    return board_data[post_url_name]
+                for name in possible_names:
+                    if name and name in board_data:
+                        return board_data[name]
     return None
 
 def extract_board_posts(data):
