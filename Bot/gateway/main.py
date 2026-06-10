@@ -1,15 +1,27 @@
 import discord
 discord.VoiceClient.warn_nacl = False
-from discord import app_commands, ui
-from discord.ext import commands, tasks
-import os, sys, json, logging, aiohttp, re, time
+import logging
+import os, sys, json, aiohttp, re, time
 from datetime import datetime
 import asyncio
+
+# Silence specific voice warning
+class VoiceFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return "voice will NOT be supported" not in msg and "davey is not installed" not in msg
+
+logging.getLogger('discord.client').addFilter(VoiceFilter())
+logging.getLogger('discord.gateway').addFilter(VoiceFilter())
+
+from discord import app_commands, ui
+from discord.ext import commands, tasks
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, register_guild
 from Bot.shared.localization import get_localizer
 from Bot.shared.canny import fetch_canny_data, extract_post_from_data
+from Bot.worker.embeds import create_canny_embed, create_canny_view
 
 logging.basicConfig(level=logging.INFO); logger = logging.getLogger("gateway")
 
@@ -100,20 +112,31 @@ class SearchView(ui.View):
     async def post_as_embed(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
         url = await self.get_real_url(self.selected_url)
-        gid = interaction.guild_id if interaction.guild else None
-        await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": gid}))
-        await interaction.response.send_message("Posting...", ephemeral=True)
+        await interaction.response.defer(ephemeral=self.ephemeral)
+        data = await fetch_canny_data(url)
+        parts = url.split("/"); uname = parts[parts.index("p") + 1] if "p" in parts else None
+        post = extract_post_from_data(data, uname)
+        if not post: return await interaction.followup.send("Post not found.", ephemeral=self.ephemeral)
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+        embed = create_canny_embed(post, lang=lang)
+        await interaction.followup.send(embed=embed, view=create_canny_view(url), ephemeral=self.ephemeral)
     async def index_selected(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
         url = await self.get_real_url(self.selected_url)
         lgid = await self.bot.valkey.get(f"last_index_selection:{interaction.user.id}")
         if lgid:
-            gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
-            await self.bot.valkey.set(f"next_poll:{url}", 0) # Trigger immediate poll
-            cfg = await self.bot.valkey.hgetall(f"guild_config:{gid}")
-            target_cid = int(cfg.get("status_channel") or interaction.channel_id)
-            await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "purge": False}))
-            return await interaction.response.send_message("Indexed!", ephemeral=True)
+            gid = int(lgid)
+            if any(str(g.id) == str(gid) for g in self.bot.guilds):
+                await self.bot.valkey.sadd("indexed_post_urls", url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
+                await self.bot.valkey.set(f"next_poll:{url}", 0) # Trigger immediate poll
+                cfg = await self.bot.valkey.hgetall(f"guild_config:{gid}")
+                target_cid = int(cfg.get("status_channel") or interaction.channel_id)
+                await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "purge": False}))
+                return await interaction.response.send_message("Indexed!", ephemeral=True)
+        if not self.bot.guilds:
+            return await interaction.response.send_message("Bot is not in any servers.", ephemeral=True)
         view = ui.View(); view.add_item(GuildSelect(self.bot, self.bot.guilds, url))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
     async def update_msg(self, interaction):
@@ -235,12 +258,13 @@ class MyBot(commands.Bot):
     async def update_activity(self):
         try:
             idx = await self.valkey.scard("indexed_post_urls"); tot = await self.valkey.hlen("canny_search_index")
+            # Activity to highlight Party Info
             activity = discord.Activity(
-                type=discord.ActivityType.watching,
-                name="feedback.vrchat.com",
-                state="Tracking",
-                details="Canny Index Progress",
-                party={'id': 'canny', 'size': [idx, tot]}
+                type=discord.ActivityType.playing,
+                name="Canny Progress",
+                state=f"{idx} of {tot} indexed",
+                details="feedback.vrchat.com",
+                party={'id': 'canny', 'size': [int(idx), int(tot)]}
             )
             await self.change_presence(activity=activity)
         except: pass
@@ -285,15 +309,21 @@ class MyBot(commands.Bot):
     async def index_this_canny(self, interaction: discord.Interaction, message: discord.Message):
         urls = [clean_url(u) for u in re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)]
         url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
-        if not url: return await interaction.response.send_message("No URL.", ephemeral=True)
+        if not url: return await interaction.response.send_message("No URL found in message.", ephemeral=True)
+
         lgid = await self.valkey.get(f"last_index_selection:{interaction.user.id}")
         if lgid:
-            gid = int(lgid); await self.valkey.sadd("indexed_post_urls", url); await self.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
-            await self.valkey.set(f"next_poll:{url}", 0) # Trigger immediate poll
-            cfg = await self.valkey.hgetall(f"guild_config:{gid}")
-            target_cid = int(cfg.get("status_channel") or interaction.channel_id)
-            await self.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))
-            return await interaction.response.send_message("Indexed!", ephemeral=True)
+            gid = int(lgid)
+            if any(str(g.id) == str(gid) for g in self.guilds):
+                await self.valkey.sadd("indexed_post_urls", url); await self.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
+                await self.valkey.set(f"next_poll:{url}", 0) # Trigger immediate poll
+                cfg = await self.valkey.hgetall(f"guild_config:{gid}")
+                target_cid = int(cfg.get("status_channel") or interaction.channel_id)
+                await self.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))
+                return await interaction.response.send_message("Indexed!", ephemeral=True)
+
+        if not self.guilds:
+            return await interaction.response.send_message("Bot is not in any servers.", ephemeral=True)
         view = ui.View(); view.add_item(GuildSelect(self, self.guilds, url, message.id))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
 
@@ -301,8 +331,16 @@ class MyBot(commands.Bot):
         urls = [clean_url(u) for u in re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)]
         url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
         if not url: return await interaction.response.send_message("No URL.", ephemeral=True)
-        job = {"type": "check_status", "url": url, "channel_id": interaction.channel_id, "guild_id": interaction.guild_id}
-        await self.valkey.lpush("discord_jobs", json.dumps(job)); await interaction.response.send_message("Checking...", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        data = await fetch_canny_data(url)
+        parts = url.split("/"); uname = parts[parts.index("p") + 1] if "p" in parts else None
+        post = extract_post_from_data(data, uname)
+        if not post: return await interaction.followup.send("Post not found.", ephemeral=True)
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+        embed = create_canny_embed(post, lang=lang)
+        await interaction.followup.send(embed=embed, view=create_canny_view(url), ephemeral=True)
 
     async def post_indexed_hour(self, interaction: discord.Interaction, message: discord.Message):
         idx = await self.valkey.smembers(f"user_indexed_posts:{interaction.user.id}")
@@ -337,10 +375,20 @@ async def ping(interaction: discord.Interaction): await interaction.response.sen
 @app_commands.allowed_installs(guilds=True, users=True)
 async def stats(interaction: discord.Interaction):
     idx = await bot.valkey.scard("indexed_post_urls"); tot = await bot.valkey.hlen("canny_search_index")
+    polled = 0
+    async for _ in bot.valkey.scan_iter("next_poll:*"): polled += 1
     this_month = time.strftime('%Y-%m')
     status_changes = await bot.valkey.get(f"stats:status_change:{this_month}") or 0
     vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0
-    msg = f"**Canny Bot Stats**\nTotal Discovered: {tot}\nUniquely Indexed: {idx}\n\n**Activity ({this_month})**\nStatus Updates: {status_changes}\nVote Milestones: {vote_reports}"
+    msg = (
+        f"**Canny Bot Stats**\n"
+        f"Discovered Posts: {tot}\n"
+        f"Tracked Posts: {idx}\n"
+        f"Active Polling Queue: {polled}\n\n"
+        f"**Activity ({this_month})**\n"
+        f"Status Updates: {status_changes}\n"
+        f"Vote Milestones: {vote_reports}"
+    )
     await interaction.response.send_message(msg)
 
 @bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")
@@ -423,14 +471,20 @@ async def update_localization(interaction: discord.Interaction):
     await interaction.response.send_message("Updated." if success else "Failed.")
 
 @bot.tree.command(name="test_feed", description="Test embed rendering")
-@app_commands.allowed_contexts(guilds=True)
-@app_commands.allowed_installs(guilds=True)
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=True, users=True)
 async def test_feed(interaction: discord.Interaction, canny_url: str):
+    url = clean_url(canny_url)
     await interaction.response.defer(ephemeral=True)
-    gid = interaction.guild_id if interaction.guild else None
-    job = {"type": "check_status", "url": canny_url, "channel_id": interaction.channel_id, "guild_id": gid}
-    await bot.valkey.lpush("discord_jobs", json.dumps(job))
-    await interaction.followup.send("Test feed requested.")
+    data = await fetch_canny_data(url)
+    parts = url.split("/"); uname = parts[parts.index("p") + 1] if "p" in parts else None
+    post = extract_post_from_data(data, uname)
+    if not post: return await interaction.followup.send("Post not found.", ephemeral=True)
+    lang = "English"
+    if interaction.guild_id:
+        lang = await bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+    embed = create_canny_embed(post, lang=lang)
+    await interaction.followup.send(embed=embed, view=create_canny_view(url), ephemeral=True)
 
 if __name__ == "__main__":
     t = os.getenv("DISCORD_TOKEN")
