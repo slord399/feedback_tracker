@@ -6,14 +6,20 @@ import re
 
 logger = logging.getLogger(__name__)
 
+_session = None
+async def get_session():
+    global _session
+    if _session is None or _session.closed:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        _session = aiohttp.ClientSession(headers=headers)
+    return _session
+
 async def fetch_canny_data(url: str, retry_fallback=True):
     """
     Fetches a Canny URL and extracts the JSON data from window.Canny or window.__REDUX_STATE__ or window.__data
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    async with aiohttp.ClientSession(headers=headers) as session:
+    session = await get_session()
+    try:
         async with session.get(url) as response:
             if response.status == 404 and retry_fallback and "/p/" in url:
                 parts = url.split("/p/")
@@ -29,24 +35,25 @@ async def fetch_canny_data(url: str, retry_fallback=True):
                 return None
             html = await response.text()
 
-    soup = BeautifulSoup(html, 'html.parser')
-    scripts = soup.find_all('script')
+        soup = BeautifulSoup(html, 'html.parser')
+        scripts = soup.find_all('script')
 
-    for script in scripts:
-        if script.string:
-            for var_name in ["window.Canny", "window.__REDUX_STATE__", "window.__data"]:
-                if var_name + " =" in script.string:
-                    try:
-                        start_idx = script.string.find("{")
-                        end_idx = script.string.rfind("}")
-                        if start_idx != -1 and end_idx != -1:
-                            data_str = script.string[start_idx:end_idx+1]
-                            # Replace undefined with null for JSON compatibility
-                            data_str = data_str.replace(":undefined", ":null")
-                            return json.loads(data_str)
-                    except Exception as e:
-                        logger.error(f"Error parsing {var_name} in {url}: {e}")
-
+        for script in scripts:
+            if script.string:
+                for var_name in ["window.Canny", "window.__REDUX_STATE__", "window.__data"]:
+                    if var_name + " =" in script.string:
+                        try:
+                            start_idx = script.string.find("{")
+                            end_idx = script.string.rfind("}")
+                            if start_idx != -1 and end_idx != -1:
+                                data_str = script.string[start_idx:end_idx+1]
+                                # Replace undefined with null for JSON compatibility
+                                data_str = data_str.replace(":undefined", ":null")
+                                return json.loads(data_str)
+                        except Exception as e:
+                            logger.error(f"Error parsing {var_name} in {url}: {e}")
+    except Exception as e:
+        logger.error(f"Fetch error {url}: {e}")
     return None
 
 def extract_post_from_data(data, post_url_name=None):
@@ -103,3 +110,8 @@ async def archive_url(url: str):
                 return response.status
     except Exception:
         return None
+
+async def close_session():
+    global _session
+    if _session and not _session.closed:
+        await _session.close()

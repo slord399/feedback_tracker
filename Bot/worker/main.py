@@ -60,11 +60,17 @@ class Worker:
                 res = await self.valkey.brpop(["{discord_jobs}_priority", "{discord_jobs}"], timeout=5)
                 if not res: continue
                 job = json.loads(res[1])
-                await self.global_limiter.acquire()
-                data = await fetch_canny_data(job["url"])
-                parts = job["url"].split("/")
-                uname = parts[parts.index("p") + 1] if "p" in parts else None
-                post = extract_post_from_data(data, uname)
+
+                cached_post = await self.valkey.get(f"post_full_cache:{job['url']}")
+                if cached_post:
+                    post = json.loads(cached_post)
+                else:
+                    await self.global_limiter.acquire()
+                    data = await fetch_canny_data(job["url"])
+                    parts = job["url"].split("/")
+                    uname = parts[parts.index("p") + 1] if "p" in parts else None
+                    post = extract_post_from_data(data, uname)
+
                 if not post: continue
 
                 if job["type"] == "index_confirm":
