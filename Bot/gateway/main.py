@@ -82,6 +82,25 @@ class LanguageSelect(ui.Select):
         await self.valkey.hset(f"guild_config:{interaction.guild_id}", "language", lang)
         await interaction.response.edit_message(content=f"Language set to {lang}.", view=None)
 
+class MetricsSelectionView(ui.View):
+    def __init__(self, bot, category_prefix, interaction):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.category_prefix = category_prefix
+        self.original_interaction = interaction
+        if category_prefix == "trending":
+            self.add_item(ui.Button(label="Weekly", style=discord.ButtonStyle.primary, custom_id="trending_week"))
+            self.add_item(ui.Button(label="Monthly", style=discord.ButtonStyle.primary, custom_id="trending_month"))
+        else:
+            self.add_item(ui.Button(label="Posts", style=discord.ButtonStyle.primary, custom_id="top_authors"))
+            self.add_item(ui.Button(label="Milestones", style=discord.ButtonStyle.primary, custom_id="top_milestones"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        category = interaction.data.get("custom_id")
+        await self.bot._send_metrics(interaction, category)
+        self.stop()
+        return True
+
 class SearchView(ui.View):
     def __init__(self, results, page=0, bot=None, ephemeral=True):
         super().__init__()
@@ -306,25 +325,15 @@ class MyBot(commands.Bot):
         cmd_hour.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_hour)
 
-        cmd_trending_week = app_commands.ContextMenu(name="Trending Canny of Week", callback=self.ctx_trending_week)
-        cmd_trending_week.allowed_contexts = USER_APP_CONTEXTS
-        cmd_trending_week.allowed_installs = USER_APP_INSTALLS
-        self.tree.add_command(cmd_trending_week)
+        cmd_trending = app_commands.ContextMenu(name="Check Trending Canny", callback=self.ctx_trending)
+        cmd_trending.allowed_contexts = USER_APP_CONTEXTS
+        cmd_trending.allowed_installs = USER_APP_INSTALLS
+        self.tree.add_command(cmd_trending)
 
-        cmd_trending_month = app_commands.ContextMenu(name="Trending Canny of Month", callback=self.ctx_trending_month)
-        cmd_trending_month.allowed_contexts = USER_APP_CONTEXTS
-        cmd_trending_month.allowed_installs = USER_APP_INSTALLS
-        self.tree.add_command(cmd_trending_month)
-
-        cmd_top_authors = app_commands.ContextMenu(name="Top 20 canny author", callback=self.ctx_top_authors)
-        cmd_top_authors.allowed_contexts = USER_APP_CONTEXTS
-        cmd_top_authors.allowed_installs = USER_APP_INSTALLS
-        self.tree.add_command(cmd_top_authors)
-
-        cmd_top_milestones = app_commands.ContextMenu(name="Top 20 canny author reach milestone", callback=self.ctx_top_milestones)
-        cmd_top_milestones.allowed_contexts = USER_APP_CONTEXTS
-        cmd_top_milestones.allowed_installs = USER_APP_INSTALLS
-        self.tree.add_command(cmd_top_milestones)
+        cmd_authors = app_commands.ContextMenu(name="Check Canny Author Metrics", callback=self.ctx_authors)
+        cmd_authors.allowed_contexts = USER_APP_CONTEXTS
+        cmd_authors.allowed_installs = USER_APP_INSTALLS
+        self.tree.add_command(cmd_authors)
 
         if self.shard_id is None or self.shard_id == 0:
             await self.tree.sync()
@@ -452,17 +461,11 @@ class MyBot(commands.Bot):
         content = "\n".join([f"<{u}>" for u in urls[:20]])
         await interaction.response.send_message(content)
 
-    async def ctx_trending_week(self, interaction: discord.Interaction, message: discord.Message):
-        await self._send_metrics(interaction, "trending_week")
+    async def ctx_trending(self, interaction: discord.Interaction, message: discord.Message):
+        await interaction.response.send_message("Select timeframe:", view=MetricsSelectionView(self, "trending", interaction), ephemeral=True)
 
-    async def ctx_trending_month(self, interaction: discord.Interaction, message: discord.Message):
-        await self._send_metrics(interaction, "trending_month")
-
-    async def ctx_top_authors(self, interaction: discord.Interaction, message: discord.Message):
-        await self._send_metrics(interaction, "top_authors")
-
-    async def ctx_top_milestones(self, interaction: discord.Interaction, message: discord.Message):
-        await self._send_metrics(interaction, "top_milestones")
+    async def ctx_authors(self, interaction: discord.Interaction, message: discord.Message):
+        await interaction.response.send_message("Select metric:", view=MetricsSelectionView(self, "authors", interaction), ephemeral=True)
 
     async def _send_metrics(self, interaction: discord.Interaction, category: str):
         await interaction.response.defer(ephemeral=True)

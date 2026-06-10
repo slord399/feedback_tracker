@@ -33,7 +33,5 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 - `Index this canny`: Quickly track a post by right-clicking a message containing a Canny link.
 - `Check canny status`: Instantly retrieve the current status, category, and votes for a post.
 - `Post what I indexed in hour`: Share a list of posts you've recently indexed.
-- `Trending Canny of Week`: View the most active feedback posts this week.
-- `Trending Canny of Month`: View the most active feedback posts this month.
-- `Top 20 canny author`: See who has created the most feedback posts.
-- `Top 20 canny author reach milestone`: See which authors have reached the most milestones (votes or completion).
+- `Check Trending Canny`: Interactive menu to view active feedback (Weekly/Monthly).
+- `Check Canny Author Metrics`: Interactive menu to view contributor rankings (Posts/Milestones).

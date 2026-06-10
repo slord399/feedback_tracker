@@ -116,7 +116,8 @@ async def poll_board_recursive(valkey, limiter, board):
                     if (score // 25) > (old_score // 25):
                         await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
                         if author_id:
-                            await valkey.zincrby("metrics:author_milestones", 1, author_id)
+                            milestone_delta = (score // 25) - (old_score // 25)
+                            await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
                 else:
                     if author_id:
                         await valkey.zincrby("metrics:author_posts", 1, author_id)
@@ -222,7 +223,8 @@ async def poll_post(valkey, limiter, url, url_name):
             await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
             await valkey.sadd("indexed_post_urls", url)
             if author_id:
-                await valkey.zincrby("metrics:author_milestones", 1, author_id)
+                milestone_delta = (score // 25) - (old_score // 25)
+                await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
     else:
         if author_id:
             await valkey.zincrby("metrics:author_posts", 1, author_id)
