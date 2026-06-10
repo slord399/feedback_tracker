@@ -1,6 +1,6 @@
 # Terms of Service
 
-Last Updated: June 2024
+Last Updated: 10th June 2024
 
 By using this bot, you agree to the following terms:
 
