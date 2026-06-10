@@ -219,7 +219,14 @@ async def poller_loop():
                         name = parts[parts.index("p") + 1]
                         p = await poll_post(valkey, limiter, url, name)
                         if p: await valkey.set(key, time.time() + get_polling_interval(p))
-                        else: await valkey.set(key, time.time() + 3600)
+                        else:
+                            fail_count = await valkey.incr(f"poll_fail_count:{url}")
+                            if fail_count > 10:
+                                await valkey.delete(key)
+                                await valkey.srem("indexed_post_urls", url)
+                                logger.warning(f"Stopped polling {url} after {fail_count} failures")
+                            else:
+                                await valkey.set(key, time.time() + 3600)
         except Exception:
             logger.exception("Poller loop error")
         await asyncio.sleep(300)

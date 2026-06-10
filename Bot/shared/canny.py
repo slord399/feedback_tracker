@@ -6,7 +6,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
-async def fetch_canny_data(url: str):
+async def fetch_canny_data(url: str, retry_fallback=True):
     """
     Fetches a Canny URL and extracts the JSON data from window.Canny or window.__REDUX_STATE__ or window.__data
     """
@@ -15,6 +15,15 @@ async def fetch_canny_data(url: str):
     }
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url) as response:
+            if response.status == 404 and retry_fallback and "/p/" in url:
+                parts = url.split("/p/")
+                if len(parts) == 2 and parts[0].count("/") > 2:
+                    base = "/".join(parts[0].split("/")[:3])
+                    fallback_url = f"{base}/p/{parts[1]}"
+                    if fallback_url != url:
+                        logger.info(f"404 for {url}, trying fallback: {fallback_url}")
+                        return await fetch_canny_data(fallback_url, retry_fallback=False)
+
             if response.status != 200:
                 logger.error(f"Failed to fetch {url}, status: {response.status}")
                 return None
