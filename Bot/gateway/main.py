@@ -306,6 +306,26 @@ class MyBot(commands.Bot):
         cmd_hour.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_hour)
 
+        cmd_trending_week = app_commands.ContextMenu(name="Trending Canny of Week", callback=self.ctx_trending_week)
+        cmd_trending_week.allowed_contexts = USER_APP_CONTEXTS
+        cmd_trending_week.allowed_installs = USER_APP_INSTALLS
+        self.tree.add_command(cmd_trending_week)
+
+        cmd_trending_month = app_commands.ContextMenu(name="Trending Canny of Month", callback=self.ctx_trending_month)
+        cmd_trending_month.allowed_contexts = USER_APP_CONTEXTS
+        cmd_trending_month.allowed_installs = USER_APP_INSTALLS
+        self.tree.add_command(cmd_trending_month)
+
+        cmd_top_authors = app_commands.ContextMenu(name="Top 20 canny author", callback=self.ctx_top_authors)
+        cmd_top_authors.allowed_contexts = USER_APP_CONTEXTS
+        cmd_top_authors.allowed_installs = USER_APP_INSTALLS
+        self.tree.add_command(cmd_top_authors)
+
+        cmd_top_milestones = app_commands.ContextMenu(name="Top 20 canny author reach milestone", callback=self.ctx_top_milestones)
+        cmd_top_milestones.allowed_contexts = USER_APP_CONTEXTS
+        cmd_top_milestones.allowed_installs = USER_APP_INSTALLS
+        self.tree.add_command(cmd_top_milestones)
+
         if self.shard_id is None or self.shard_id == 0:
             await self.tree.sync()
             self.auto_sync_localization.start()
@@ -362,13 +382,18 @@ class MyBot(commands.Bot):
         status_chan = cfg.get("status_channel")
         if str(message.channel.id) in [react_chan, status_chan]:
             urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)
+            canny_found = False
+            purge = (str(message.channel.id) == status_chan)
             for u in urls:
                 u = clean_url(u)
                 if "canny.io" in u or "feedback.vrchat.com" in u:
+                    canny_found = True
                     await self.valkey.set(f"next_poll:{u}", 0)
-                    purge = (str(message.channel.id) == status_chan)
                     target_cid = int(status_chan or message.channel.id)
-                    await self.bot.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": u, "guild_id": message.guild.id, "channel_id": target_cid, "original_channel_id": message.channel.id, "user_id": message.author.id, "user_name": message.author.name, "user_icon": str(message.author.display_avatar.url), "original_message_id": message.id, "purge": purge}))
+                    await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": u, "guild_id": message.guild.id, "channel_id": target_cid, "original_channel_id": message.channel.id, "user_id": message.author.id, "user_name": message.author.name, "user_icon": str(message.author.display_avatar.url), "original_message_id": message.id, "purge": purge}))
+            if canny_found:
+                try: await message.edit(suppress=True)
+                except: pass
 
     async def index_this_canny(self, interaction: discord.Interaction, message: discord.Message):
         urls = [clean_url(u) for u in re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)]
@@ -385,7 +410,9 @@ class MyBot(commands.Bot):
                 await self.valkey.set(f"next_poll:{url}", 0)
                 cfg = await self.valkey.hgetall(f"guild_config:{gid}")
                 target_cid = int(cfg.get("status_channel") or interaction.channel_id)
-                await self.bot.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))
+                await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))
+                try: await message.edit(suppress=True)
+                except: pass
                 return await interaction.response.send_message("Indexed!", ephemeral=True)
         if not self.guilds:
             return await interaction.response.send_message("Bot is not in any servers.", ephemeral=True)
@@ -424,6 +451,57 @@ class MyBot(commands.Bot):
 
         content = "\n".join([f"<{u}>" for u in urls[:20]])
         await interaction.response.send_message(content)
+
+    async def ctx_trending_week(self, interaction: discord.Interaction, message: discord.Message):
+        await self._send_metrics(interaction, "trending_week")
+
+    async def ctx_trending_month(self, interaction: discord.Interaction, message: discord.Message):
+        await self._send_metrics(interaction, "trending_month")
+
+    async def ctx_top_authors(self, interaction: discord.Interaction, message: discord.Message):
+        await self._send_metrics(interaction, "top_authors")
+
+    async def ctx_top_milestones(self, interaction: discord.Interaction, message: discord.Message):
+        await self._send_metrics(interaction, "top_milestones")
+
+    async def _send_metrics(self, interaction: discord.Interaction, category: str):
+        await interaction.response.defer(ephemeral=True)
+        embed = discord.Embed(title=f"Metrics: {category.replace('_', ' ').title()}", color=discord.Color.gold())
+
+        if category == "trending_week":
+            key = f"metrics:trending:week:{datetime.now().strftime('%Y-%W')}"
+            data = await self.valkey.zrevrange(key, 0, 19, withscores=True)
+            desc = ""
+            for i, (uname, score) in enumerate(data, 1):
+                p_raw = await self.valkey.hget("canny_search_index", uname)
+                title = json.loads(p_raw).get('title', uname) if p_raw else uname
+                desc += f"{i}. **{title}** (+{int(score)} activity)\n"
+            embed.description = desc or "No data available."
+        elif category == "trending_month":
+            key = f"metrics:trending:month:{datetime.now().strftime('%Y-%m')}"
+            data = await self.valkey.zrevrange(key, 0, 19, withscores=True)
+            desc = ""
+            for i, (uname, score) in enumerate(data, 1):
+                p_raw = await self.valkey.hget("canny_search_index", uname)
+                title = json.loads(p_raw).get('title', uname) if p_raw else uname
+                desc += f"{i}. **{title}** (+{int(score)} activity)\n"
+            embed.description = desc or "No data available."
+        elif category == "top_authors":
+            data = await self.valkey.zrevrange("metrics:author_posts", 0, 19, withscores=True)
+            desc = ""
+            for i, (aid, count) in enumerate(data, 1):
+                name = await self.valkey.hget("metrics:author_names", aid) or aid
+                desc += f"{i}. **{name}**: {int(count)} posts\n"
+            embed.description = desc or "No data available."
+        elif category == "top_milestones":
+            data = await self.valkey.zrevrange("metrics:author_milestones", 0, 19, withscores=True)
+            desc = ""
+            for i, (aid, count) in enumerate(data, 1):
+                name = await self.valkey.hget("metrics:author_names", aid) or aid
+                desc += f"{i}. **{name}**: {int(count)} milestones (25+ votes)\n"
+            embed.description = desc or "No data available."
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 bot = MyBot()
 
@@ -491,6 +569,19 @@ async def help_cmd(interaction: discord.Interaction):
 async def credit(interaction: discord.Interaction):
     msg = "**This bot is not affiliated with VRChat Inc.**\n\nHosted by [VRCβフォース](<https://discord.gg/XJHRXwd>) | [VRChat Group](<https://vrc.group/BETAJP.2222>).\nLocalization: [Google Sheet](<https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing>).\nOpen Source: [GitHub](<https://github.com/slord399/feedback_tracker/>).\nLegal: [Terms of Service](<https://github.com/slord399/feedback_tracker/blob/main/Terms/tos.md>) | [Privacy Policy](<https://github.com/slord399/feedback_tracker/blob/main/Terms/privacy.md>).\nDonations: [X (formerly Twitter)](<https://x.com/slord399/creator-subscriptions/subscribe>) | [Ko-fi](<https://ko-fi.com/tony_lewis>) | [GitHub Sponsors](<https://github.com/sponsors/slord399/>)."
     await interaction.response.send_message(msg, ephemeral=True)
+
+@bot.tree.command(name="metrics", description="View top contributors and trending posts")
+@app_commands.describe(category="Select the metrics category")
+@app_commands.choices(category=[
+    app_commands.Choice(name="Trending Canny of Week", value="trending_week"),
+    app_commands.Choice(name="Trending Canny of Month", value="trending_month"),
+    app_commands.Choice(name="Top 20 canny author", value="top_authors"),
+    app_commands.Choice(name="Top 20 canny author reach milestone", value="top_milestones")
+])
+@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@app_commands.allowed_installs(guilds=True, users=True)
+async def metrics_cmd(interaction: discord.Interaction, category: str):
+    await bot._send_metrics(interaction, category)
 
 @bot.tree.command(name="mode", description="Toggle Global or Local indexing mode")
 @app_commands.describe(mode="Global: Receive all updates | Local: Receive only updates for posts indexed by this server")

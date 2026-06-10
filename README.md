@@ -8,10 +8,12 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 - **Deep Search**: Utilize an interactive search system with advanced filters (boards, status, votes, etc.) to find exactly what you're looking for.
 - **Adaptive Polling**: Intelligent polling logic ensures active posts are updated frequently while conserving resources for older content.
 - **User App Integration**: Convenient context menu commands allow users to interact with Canny links directly from any message.
+- **Metrics & Insights**: Track trending feedback and recognize top contributors with detailed weekly and monthly analytics.
 - **Multi-lingual Support**: Fully localizable UI with support for 12+ languages.
 
 ## Commands
 - `/stats`: View global and server-specific activity metrics.
+- `/metrics`: View top contributors and trending posts (Weekly/Monthly Trending, Top Authors, Milestone Masters).
 - `/search`: Search Canny posts with interactive filters.
 - `/ping`: Check API and bot latencies.
 - `/credit`: Bot information and affiliation details.
@@ -31,3 +33,7 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 - `Index this canny`: Quickly track a post by right-clicking a message containing a Canny link.
 - `Check canny status`: Instantly retrieve the current status, category, and votes for a post.
 - `Post what I indexed in hour`: Share a list of posts you've recently indexed.
+- `Trending Canny of Week`: View the most active feedback posts this week.
+- `Trending Canny of Month`: View the most active feedback posts this month.
+- `Top 20 canny author`: See who has created the most feedback posts.
+- `Top 20 canny author reach milestone`: See which authors have reached the most milestones (votes or completion).
