@@ -1,6 +1,6 @@
 # Privacy Policy
 
-Last Updated: June 2024
+Last Updated: 10th June 2026
 
 We are committed to protecting your privacy and complying with the General Data Protection Regulation (GDPR) and the UK GDPR.
 
