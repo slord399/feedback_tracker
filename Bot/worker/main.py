@@ -56,7 +56,7 @@ class Worker:
         logger.info("Worker started")
         while True:
             try:
-                res = await self.valkey.brpop("discord_jobs", timeout=5)
+                res = await self.valkey.brpop(["discord_priority_jobs", "discord_jobs"], timeout=5)
                 if not res: continue
                 job = json.loads(res[1])
                 await self.global_limiter.acquire()
