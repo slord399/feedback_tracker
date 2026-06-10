@@ -233,7 +233,7 @@ async def poller_loop():
 
             # 2. Poll EXISTING posts based on their calculated intervals
             async for key in valkey.scan_iter("next_poll:*"):
-                url = key.decode().split("next_poll:")[1]
+                url = key.split("next_poll:")[1]
                 nxt = await valkey.get(key)
                 if nxt and float(nxt) <= time.time():
                     parts = url.split("/")
