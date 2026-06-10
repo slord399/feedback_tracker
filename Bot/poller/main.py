@@ -300,6 +300,6 @@ async def poller_loop():
                                 await valkey.set(key, time.time() + 3600)
         except Exception:
             logger.exception("Poller loop error")
-        await asyncio.sleep(300)
+        await asyncio.sleep(60)
 
 if __name__ == "__main__": asyncio.run(poller_loop())
