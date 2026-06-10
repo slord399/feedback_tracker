@@ -5,6 +5,8 @@ import os
 import sys
 import aiohttp
 import discord
+import redis
+import redis.asyncio as redis_async
 discord.VoiceClient.warn_nacl = False
 
 class VoiceFilter(logging.Filter):
@@ -16,7 +18,6 @@ logging.getLogger('discord.client').addFilter(VoiceFilter())
 logging.getLogger('discord.gateway').addFilter(VoiceFilter())
 
 import time
-import redis.asyncio as redis
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, get_active_guilds
@@ -56,7 +57,7 @@ class Worker:
         logger.info("Worker started")
         while True:
             try:
-                res = await self.valkey.brpop(["discord_priority_jobs", "discord_jobs"], timeout=5)
+                res = await self.valkey.brpop(["{discord_jobs}_priority", "{discord_jobs}"], timeout=5)
                 if not res: continue
                 job = json.loads(res[1])
                 await self.global_limiter.acquire()
@@ -74,12 +75,10 @@ class Worker:
                     embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
                     await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
 
-                    # Notify all GLOBAL guilds
                     for oid in await get_active_guilds(self.valkey):
                         if str(oid) == str(gid): continue
                         cfg = await self.valkey.hgetall(f"guild_config:{oid}")
                         if cfg.get("mode") == "global" and cfg.get("status_channel"):
-                            # Requirements: "automagically indexed on that server and start tracking there too"
                             await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
                             oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Global Request", "icon": None}, lang=cfg.get("language", "English"))
                             await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid)
@@ -87,8 +86,7 @@ class Worker:
                 elif job["type"] == "check_status":
                     gid = job.get("guild_id")
                     lang = "English"
-                    if gid:
-                        lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
+                    if gid: lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, lang=lang)
                     await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
 
@@ -96,17 +94,14 @@ class Worker:
                     await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
                     for gid in await get_active_guilds(self.valkey):
                         cfg = await self.valkey.hgetall(f"guild_config:{gid}")
-                        # Case 1: Post indexed specifically in this guild
-                        # Case 2: Guild is in global mode (tracks everything)
                         if await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"]) or cfg.get("mode") == "global":
                             chan = cfg.get("status_channel")
                             if chan:
-                                # Ensure it gets indexed if in global mode
                                 if cfg.get("mode") == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
                                 lang = cfg.get("language") or "English"
                                 emb = create_canny_embed(post, old_status=job.get("old_status"), lang=lang)
                                 await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
-            except redis.exceptions.TimeoutError: continue
+            except (redis.exceptions.TimeoutError, asyncio.TimeoutError): continue
             except Exception: logger.exception("Worker error")
 
     def view_to_components(self, view):
