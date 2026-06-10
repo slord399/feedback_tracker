@@ -38,6 +38,7 @@ class GuildSelect(ui.Select):
         await valkey.sadd(f"guild_indexed_posts:{gid}", self.canny_url)
         await valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{self.canny_url}")
         await valkey.set(f"last_index_selection:{interaction.user.id}", str(gid), ex=300)
+        await valkey.set(f"next_poll:{self.canny_url}", 0) # Trigger immediate poll
         cfg = await valkey.hgetall(f"guild_config:{gid}")
         target_cid = int(cfg.get("status_channel") or interaction.channel_id)
         await valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": self.canny_url, "guild_id": int(gid), "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": self.message_id, "purge": False}))
@@ -108,6 +109,7 @@ class SearchView(ui.View):
         lgid = await self.bot.valkey.get(f"last_index_selection:{interaction.user.id}")
         if lgid:
             gid = int(lgid); await self.bot.valkey.sadd("indexed_post_urls", url); await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
+            await self.bot.valkey.set(f"next_poll:{url}", 0) # Trigger immediate poll
             cfg = await self.bot.valkey.hgetall(f"guild_config:{gid}")
             target_cid = int(cfg.get("status_channel") or interaction.channel_id)
             await self.bot.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "purge": False}))
@@ -275,6 +277,7 @@ class MyBot(commands.Bot):
             for u in urls:
                 u = clean_url(u)
                 if "canny.io" in u or "feedback.vrchat.com" in u:
+                    await self.valkey.set(f"next_poll:{u}", 0) # Trigger immediate poll
                     purge = (str(message.channel.id) == status_chan)
                     target_cid = int(status_chan or message.channel.id)
                     await self.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": u, "guild_id": message.guild.id, "channel_id": target_cid, "original_channel_id": message.channel.id, "user_id": message.author.id, "user_name": message.author.name, "user_icon": str(message.author.display_avatar.url), "original_message_id": message.id, "purge": purge}))
@@ -286,6 +289,7 @@ class MyBot(commands.Bot):
         lgid = await self.valkey.get(f"last_index_selection:{interaction.user.id}")
         if lgid:
             gid = int(lgid); await self.valkey.sadd("indexed_post_urls", url); await self.valkey.sadd(f"guild_indexed_posts:{gid}", url); await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
+            await self.valkey.set(f"next_poll:{url}", 0) # Trigger immediate poll
             cfg = await self.valkey.hgetall(f"guild_config:{gid}")
             target_cid = int(cfg.get("status_channel") or interaction.channel_id)
             await self.valkey.lpush("discord_jobs", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))

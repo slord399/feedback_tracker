@@ -89,6 +89,7 @@ async def poll_board_recursive(valkey, limiter, board):
                         await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
                 elif score >= 25:
                     await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
+                    await valkey.sadd("indexed_post_urls", p_url)
 
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
                 # Set initial poll interval if not set
@@ -173,8 +174,10 @@ async def poll_post(valkey, limiter, url, url_name):
 
         if (score // 25) > (old_score // 25):
             await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+            await valkey.sadd("indexed_post_urls", url)
     elif score >= 25:
         await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+        await valkey.sadd("indexed_post_urls", url)
 
     await valkey.set(f"post_cache:{pid}", json.dumps(post))
 
@@ -219,12 +222,14 @@ async def poller_loop():
                     if not uname: continue
                     p_url = f"https://feedback.vrchat.com/{b['urlName']}/p/{uname}"
 
-                    if not await valkey.exists(f"post_cache_lite:{uname}"):
-                        logger.info(f"New post discovered: {uname}")
-                        await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
-                        full_p = await poll_post(valkey, limiter, p_url, uname)
-                        if full_p:
-                            await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_p))
+                    if await valkey.exists(f"post_cache_lite:{uname}"):
+                        break # Optimization: reached already indexed posts
+
+                    logger.info(f"New post discovered: {uname}")
+                    await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
+                    full_p = await poll_post(valkey, limiter, p_url, uname)
+                    if full_p:
+                        await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_p))
 
             # 2. Poll EXISTING posts based on their calculated intervals
             async for key in valkey.scan_iter("next_poll:*"):
