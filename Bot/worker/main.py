@@ -6,6 +6,15 @@ import sys
 import aiohttp
 import discord
 discord.VoiceClient.warn_nacl = False
+
+class VoiceFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return "voice will NOT be supported" not in msg and "davey is not installed" not in msg
+
+logging.getLogger('discord.client').addFilter(VoiceFilter())
+logging.getLogger('discord.gateway').addFilter(VoiceFilter())
+
 import time
 import redis.asyncio as redis
 

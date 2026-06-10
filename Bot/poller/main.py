@@ -6,6 +6,15 @@ import sys
 import os
 from datetime import datetime, timezone
 
+# Silence specific voice warning
+class VoiceFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return "voice will NOT be supported" not in msg and "davey is not installed" not in msg
+
+logging.getLogger('discord.client').addFilter(VoiceFilter())
+logging.getLogger('discord.gateway').addFilter(VoiceFilter())
+
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client
 from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts
