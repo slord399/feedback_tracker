@@ -1,27 +1,33 @@
-# VRChat Canny Status Tracking Bot
+# VRChat Canny Status Tracker
 
-A distributed Discord bot to track feedback on `feedback.vrchat.com`.
+A powerful, distributed Discord bot designed to keep your community informed about feedback and feature requests from `feedback.vrchat.com`.
 
 ## Features
-- **Status Tracking**: Real-time updates for Canny posts.
-- **Global/Local Modes**: Index posts across all servers or keep them local.
-- **Search**: Interactive search with pagination.
-- **Adaptive Polling**: Efficient updates based on post activity.
-- **User App**: Context menu commands for ease of use.
+- **Real-time Status Tracking**: Automatically receive updates when a Canny post's status changes or hits vote milestones.
+- **Global & Local Modes**: Choose whether to receive updates for all tracked posts globally or keep things focused on your server's interests.
+- **Deep Search**: Utilize an interactive search system with advanced filters (boards, status, votes, etc.) to find exactly what you're looking for.
+- **Adaptive Polling**: Intelligent polling logic ensures active posts are updated frequently while conserving resources for older content.
+- **User App Integration**: Convenient context menu commands allow users to interact with Canny links directly from any message.
+- **Multi-lingual Support**: Fully localizable UI with support for 12+ languages.
 
 ## Commands
-- `/stats`: Post activity metrics.
-- `/search`: Search Canny posts.
-- `/ping`: Check API latencies.
-- `/credit`: Bot info.
-- `/help`: Command guide.
-- `/mode`: Toggle Global/Local mode (Admin).
-- `/set_status_channel`: Set update channel (Admin).
-- `/set_react_channel`: Set link-listening channel (Admin).
-- `/set_language`: Set UI language (Admin).
-- `/bulk_add`: Index all links in channel (Admin).
+- `/stats`: View global and server-specific activity metrics.
+- `/search`: Search Canny posts with interactive filters.
+- `/ping`: Check API and bot latencies.
+- `/credit`: Bot information and affiliation details.
+- `/help`: Detailed command guide and usage tips.
+
+### Administrative Commands
+*These commands require the **Manage Messages** permission.*
+
+- `/settings`: View current server configuration, including mode and target channels.
+- `/mode`: Toggle between **Global** (track everything) and **Local** (track only what you index) modes.
+- `/set_status_channel`: Select the channel where status updates and notifications will be posted.
+- `/set_react_channel`: Designate a channel where the bot will automatically listen for and index Canny links.
+- `/set_language`: Choose the preferred language for the bot's interface.
+- `/bulk_add`: Quickly index all Canny links found in a channel's recent history.
 
 ## Context Menus
-- `Index this canny`: Index a post from a link.
-- `Check canny status`: Get current status of a post.
-- `Post what I indexed in hour`: Post your recent indexing activity.
+- `Index this canny`: Quickly track a post by right-clicking a message containing a Canny link.
+- `Check canny status`: Instantly retrieve the current status, category, and votes for a post.
+- `Post what I indexed in hour`: Share a list of posts you've recently indexed.
