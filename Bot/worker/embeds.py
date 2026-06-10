@@ -22,8 +22,11 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
     if board: category_name = f"{board.get('name')} / {category_name}"
 
     current_status = post.get("status", "open")
-    status_text = current_status
-    if old_status and old_status != current_status: status_text = f"{old_status} > {current_status}"
+    localized_status = loc.get(current_status.lower(), lang)
+    status_text = localized_status
+    if old_status and old_status != current_status:
+        localized_old = loc.get(old_status.lower(), lang)
+        status_text = f"{localized_old} > {localized_status}"
 
     created_ts = post.get("created")
     try:

@@ -78,7 +78,8 @@ class Worker:
                     for oid in await get_active_guilds(self.valkey):
                         if str(oid) == str(gid): continue
                         cfg = await self.valkey.hgetall(f"guild_config:{oid}")
-                        if cfg.get("mode") == "global" and cfg.get("status_channel"):
+                        mode = cfg.get("mode", "global")
+                        if mode == "global" and cfg.get("status_channel"):
                             await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
                             oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Global Request", "icon": None}, lang=cfg.get("language", "English"))
                             await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid)
@@ -94,10 +95,11 @@ class Worker:
                     await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
                     for gid in await get_active_guilds(self.valkey):
                         cfg = await self.valkey.hgetall(f"guild_config:{gid}")
-                        if await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"]) or cfg.get("mode") == "global":
+                        mode = cfg.get("mode", "global")
+                        if await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"]) or mode == "global":
                             chan = cfg.get("status_channel")
                             if chan:
-                                if cfg.get("mode") == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
+                                if mode == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
                                 lang = cfg.get("language") or "English"
                                 emb = create_canny_embed(post, old_status=job.get("old_status"), lang=lang)
                                 await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)

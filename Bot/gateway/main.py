@@ -285,6 +285,10 @@ class MyBot(commands.Bot):
         self.valkey = get_valkey_client()
         self.localizer = get_localizer()
 
+    async def on_guild_join(self, guild):
+        await register_guild(self.valkey, guild.id)
+        logger.info(f"Joined new guild: {guild.name} ({guild.id})")
+
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
         cmd_index = app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny)
@@ -417,19 +421,9 @@ class MyBot(commands.Bot):
                 urls.append(url)
         if not urls:
             return await interaction.response.send_message("No posts indexed in the last hour.", ephemeral=True)
-        await interaction.response.defer(ephemeral=False)
-        embeds = []
-        for url in urls[:10]:
-            data = await fetch_canny_data(url)
-            parts = url.split("/")
-            uname = parts[parts.index("p") + 1] if "p" in parts else None
-            post = extract_post_from_data(data, uname)
-            if post:
-                lang = "English"
-                if interaction.guild_id: lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
-                embeds.append(create_canny_embed(post, lang=lang))
-        if not embeds: return await interaction.followup.send("Could not retrieve post data.", ephemeral=True)
-        await interaction.followup.send(embeds=embeds)
+
+        content = "\n".join([f"<{u}>" for u in urls[:20]])
+        await interaction.response.send_message(content)
 
 bot = MyBot()
 
@@ -441,6 +435,23 @@ bot = MyBot()
 async def search(interaction: discord.Interaction, visibility: str = "ephemeral"):
     ephemeral = (visibility == "ephemeral")
     await interaction.response.send_message("Configure filters:", view=SearchFilterView(bot, ephemeral=ephemeral), ephemeral=True)
+
+@bot.tree.command(name="settings", description="View current server configuration")
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
+async def settings(interaction: discord.Interaction):
+    cfg = await bot.valkey.hgetall(f"guild_config:{interaction.guild_id}")
+    mode = cfg.get("mode", "global").capitalize()
+    status_chan = f"<#{cfg.get('status_channel')}>" if cfg.get("status_channel") else "Not set"
+    react_chan = f"<#{cfg.get('react_channel')}>" if cfg.get("react_channel") else "Not set"
+    lang = cfg.get("language", "English")
+
+    embed = discord.Embed(title=f"Settings for {interaction.guild.name}", color=discord.Color.blue())
+    embed.add_field(name="Mode", value=mode, inline=True)
+    embed.add_field(name="Language", value=lang, inline=True)
+    embed.add_field(name="Status Channel", value=status_chan, inline=False)
+    embed.add_field(name="React Channel", value=react_chan, inline=False)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="ping", description="Check Discord API latency")
 @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -483,13 +494,18 @@ async def credit(interaction: discord.Interaction):
     await interaction.response.send_message(msg, ephemeral=True)
 
 @bot.tree.command(name="mode", description="Toggle Global or Local indexing mode")
+@app_commands.describe(mode="Global: Receive all updates | Local: Receive only updates for posts indexed by this server")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Global", value="global"),
+    app_commands.Choice(name="Local", value="local")
+])
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
-async def mode(interaction: discord.Interaction, mode: str):
-    await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "mode", mode.lower())
+async def mode(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "mode", mode.value)
     await register_guild(bot.valkey, interaction.guild_id)
-    await interaction.response.send_message(f"Mode: {mode}")
+    await interaction.response.send_message(f"Mode set to: **{mode.name}**")
 
 @bot.tree.command(name="set_status_channel", description="Set the channel for status updates")
 @app_commands.allowed_contexts(guilds=True)
