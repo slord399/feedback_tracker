@@ -132,6 +132,7 @@ async def poll_board_recursive(valkey, limiter, board):
                         await valkey.sadd("indexed_post_urls", p_url)
 
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
+                await valkey.set(f"post_full_cache:{p_url}", json.dumps(full_post), ex=86400)
                 if not await valkey.exists(f"next_poll:{p_url}"):
                     await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_post))
                     await valkey.incr("stats:polling_queue_size")
@@ -239,6 +240,7 @@ async def poll_post(valkey, limiter, url, url_name):
             await valkey.sadd("indexed_post_urls", url)
 
     await valkey.set(f"post_cache:{pid}", json.dumps(post))
+    await valkey.set(f"post_full_cache:{url}", json.dumps(post), ex=86400)
     created_iso = post.get("created", ""); created_ts = 0
     try:
         dt = datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
@@ -298,6 +300,6 @@ async def poller_loop():
                                 await valkey.set(key, time.time() + 3600)
         except Exception:
             logger.exception("Poller loop error")
-        await asyncio.sleep(300)
+        await asyncio.sleep(60)
 
 if __name__ == "__main__": asyncio.run(poller_loop())

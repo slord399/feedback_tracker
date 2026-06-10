@@ -18,8 +18,12 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
     if len(details) > 1000: details = details[:1000] + loc.get("continue", lang)
 
     category = post.get("category")
-    category_name = category.get("name", "None") if category else "None"
-    if board: category_name = f"{board.get('name')} / {category_name}"
+    category_raw = category.get("name", "None") if category else "None"
+    category_name = loc.get(category_raw.lower(), lang)
+    if board:
+        board_raw = board.get('name', 'None')
+        board_name = loc.get(board_raw.lower(), lang)
+        category_name = f"{board_name} / {category_name}"
 
     current_status = post.get("status", "open")
     localized_status = loc.get(current_status.lower(), lang)

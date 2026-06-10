@@ -387,20 +387,20 @@ class MyBot(commands.Bot):
         if message.author.bot or not message.guild:
             return
         cfg = await self.valkey.hgetall(f"guild_config:{message.guild.id}")
-        react_chan = cfg.get("react_channel")
         status_chan = cfg.get("status_channel")
-        if str(message.channel.id) in [react_chan, status_chan]:
+        is_react = await self.valkey.sismember(f"guild_react_channels:{message.guild.id}", str(message.channel.id))
+        is_status = (str(message.channel.id) == status_chan)
+        if is_react or is_status:
             urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)
             canny_found = False
-            purge = (str(message.channel.id) == status_chan)
             for u in urls:
                 u = clean_url(u)
                 if "canny.io" in u or "feedback.vrchat.com" in u:
                     canny_found = True
                     await self.valkey.set(f"next_poll:{u}", 0)
                     target_cid = int(status_chan or message.channel.id)
-                    await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": u, "guild_id": message.guild.id, "channel_id": target_cid, "original_channel_id": message.channel.id, "user_id": message.author.id, "user_name": message.author.name, "user_icon": str(message.author.display_avatar.url), "original_message_id": message.id, "purge": purge}))
-            if canny_found:
+                    await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": u, "guild_id": message.guild.id, "channel_id": target_cid, "original_channel_id": message.channel.id, "user_id": message.author.id, "user_name": message.author.name, "user_icon": str(message.author.display_avatar.url), "original_message_id": message.id, "purge": is_status}))
+            if canny_found and is_status:
                 try: await message.edit(suppress=True)
                 except: pass
 
@@ -525,14 +525,17 @@ async def settings(interaction: discord.Interaction):
     cfg = await bot.valkey.hgetall(f"guild_config:{interaction.guild_id}")
     mode = cfg.get("mode", "global").capitalize()
     status_chan = f"<#{cfg.get('status_channel')}>" if cfg.get("status_channel") else "Not set"
-    react_chan = f"<#{cfg.get('react_channel')}>" if cfg.get("react_channel") else "Not set"
+
+    react_chans = await bot.valkey.smembers(f"guild_react_channels:{interaction.guild_id}")
+    react_display = ", ".join([f"<#{c}>" for c in react_chans]) if react_chans else "None set"
+
     lang = cfg.get("language", "English")
 
     embed = discord.Embed(title=f"Settings for {interaction.guild.name}", color=discord.Color.blue())
     embed.add_field(name="Mode", value=mode, inline=True)
     embed.add_field(name="Language", value=lang, inline=True)
     embed.add_field(name="Status Channel", value=status_chan, inline=False)
-    embed.add_field(name="React Channel", value=react_chan, inline=False)
+    embed.add_field(name="React Channels", value=react_display, inline=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="ping", description="Check Discord API latency")
@@ -609,14 +612,22 @@ async def set_status_channel(interaction: discord.Interaction, channel: discord.
     await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("Status channel set.")
 
-@bot.tree.command(name="set_react_channel", description="Set an additional channel for auto-indexing")
-@app_commands.allowed_contexts(guilds=True)
-@app_commands.allowed_installs(guilds=True)
+react_group = app_commands.Group(name="react_channel", description="Manage auto-indexing channels")
+
+@react_group.command(name="add", description="Add a channel for auto-indexing")
 @app_commands.checks.has_permissions(manage_messages=True)
-async def set_react_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "react_channel", str(channel.id))
+async def react_add(interaction: discord.Interaction, channel: discord.TextChannel):
+    await bot.valkey.sadd(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
     await register_guild(bot.valkey, interaction.guild_id)
-    await interaction.response.send_message("React channel set.")
+    await interaction.response.send_message(f"Added <#{channel.id}> to react channels.")
+
+@react_group.command(name="remove", description="Remove a channel from auto-indexing")
+@app_commands.checks.has_permissions(manage_messages=True)
+async def react_remove(interaction: discord.Interaction, channel: discord.TextChannel):
+    await bot.valkey.srem(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
+    await interaction.response.send_message(f"Removed <#{channel.id}> from react channels.")
+
+bot.tree.add_command(react_group)
 
 @bot.tree.command(name="bulk_add", description="Index URLs from channel history")
 @app_commands.allowed_contexts(guilds=True)
@@ -632,6 +643,7 @@ async def bulk_add(interaction: discord.Interaction):
             if "canny.io" in u or "feedback.vrchat.com" in u:
                 await bot.valkey.sadd("indexed_post_urls", u)
                 await bot.valkey.sadd(f"guild_indexed_posts:{interaction.guild_id}", u)
+                await bot.valkey.set(f"next_poll:{u}", 0)
                 found += 1
     await interaction.followup.send(f"Added {found} URLs.")
 
