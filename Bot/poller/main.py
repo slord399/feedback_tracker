@@ -87,7 +87,14 @@ async def poll_board_recursive(valkey, limiter, board):
                         await valkey.lpush("discord_jobs", json.dumps({"type": "status_change", "post": full_post, "old_status": old.get("status"), "url": p_url}))
                     if (score // 25) > (old.get("score", 0) // 25):
                         await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
+                elif score >= 25:
+                    await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
+                    await valkey.sadd("indexed_post_urls", p_url)
+
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
+                # Set initial poll interval if not set
+                if not await valkey.exists(f"next_poll:{p_url}"):
+                    await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_post))
 
             await valkey.hset("canny_search_index", uname, json.dumps({
                 "title": title,
@@ -120,21 +127,31 @@ async def poll_board_recursive(valkey, limiter, board):
 
 def get_polling_interval(post):
     status = post.get("status", "").lower()
-    if status in ["complete", "completed", "closed", "available in future release"]: return 12 * 3600
+    if status in ["complete", "completed", "closed", "available in future release"]:
+        return 12 * 3600
+
     try:
-        created_at = datetime.fromisoformat(post.get("created").replace("Z", "+00:00"))
-        updated_at = datetime.fromisoformat(post.get("updatedAt").replace("Z", "+00:00"))
         now = datetime.now(timezone.utc)
-        age = (now - created_at).days
-        inactive = (now - updated_at).total_seconds() / 3600
-        if inactive < 1: return 300
-        if inactive < 6: return 900
-        if inactive < 24: return 3600
-        if inactive < 48: return 10800
-        if age > 365: return 86400
-        if age > 180: return 43200
-        return 21600
-    except: return 3600
+        created_at = datetime.fromisoformat(post.get("created").replace("Z", "+00:00"))
+
+        # Canny might not always provide updatedAt in the same format, fallback to created
+        updated_at_str = post.get("updatedAt") or post.get("created")
+        updated_at = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
+
+        age_days = (now - created_at).days
+        inactive_hours = (now - updated_at).total_seconds() / 3600
+
+        if inactive_hours < 1: return 300 # 5 mins
+        if inactive_hours < 6: return 900 # 15 mins
+        if inactive_hours < 24: return 3600 # 60 mins
+        if inactive_hours < 48: return 10800 # 3 hours
+
+        if age_days > 365: return 86400 # 24 hours
+        if age_days > 180: return 43200 # 12 hours
+
+        return 21600 # 6 hours
+    except:
+        return 3600
 
 async def poll_post(valkey, limiter, url, url_name):
     await limiter.acquire()
@@ -143,17 +160,43 @@ async def poll_post(valkey, limiter, url, url_name):
     if not post: return None
     pid = post.get("_id")
     old_json = await valkey.get(f"post_cache:{pid}")
+
+    score = post.get("score", 0)
+    status = post.get("status", "open")
+
     if old_json:
         old = json.loads(old_json)
-        if old.get("status") != post.get("status"):
-            await valkey.lpush("discord_jobs", json.dumps({"type": "status_change", "post": post, "old_status": old.get("status"), "url": url}))
-        if (post.get("score", 0) // 25) > (old.get("score", 0) // 25):
+        old_score = old.get("score", 0)
+        old_status = old.get("status")
+
+        if old_status != status:
+            await valkey.lpush("discord_jobs", json.dumps({"type": "status_change", "post": post, "old_status": old_status, "url": url}))
+
+        if (score // 25) > (old_score // 25):
             await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+            await valkey.sadd("indexed_post_urls", url)
+    elif score >= 25:
+        await valkey.lpush("discord_jobs", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+        await valkey.sadd("indexed_post_urls", url)
+
     await valkey.set(f"post_cache:{pid}", json.dumps(post))
+
+    created_iso = post.get("created", "")
+    created_ts = 0
+    try:
+        dt = datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
+        created_ts = int(dt.timestamp())
+    except: pass
+
     await valkey.hset("canny_search_index", url_name, json.dumps({
-        "title": post.get("title"), "details": post.get("details", ""), "url": url,
-        "score": post.get("score"), "status": post.get("status"), "comments": post.get("commentCount", 0),
-        "board": post.get("board", {}).get("name")
+        "title": post.get("title"),
+        "details": post.get("details", ""),
+        "url": url,
+        "score": score,
+        "status": status,
+        "comments": post.get("commentCount", 0),
+        "board": post.get("board", {}).get("name"),
+        "created": created_ts
     }))
     return post
 
@@ -168,18 +211,7 @@ async def poller_loop():
 
     while True:
         try:
-            indexed = await valkey.smembers("indexed_post_urls")
-            logger.info(f"Polling {len(indexed)} indexed posts...")
-            for url in indexed:
-                parts = url.split("/")
-                if "p" in parts:
-                    name = parts[parts.index("p") + 1]
-                    nxt = await valkey.get(f"next_poll:{url}")
-                    if not nxt or float(nxt) <= time.time():
-                        p = await poll_post(valkey, limiter, url, name)
-                        if p: await valkey.set(f"next_poll:{url}", time.time() + get_polling_interval(p))
-
-            # Check front pages for new activity
+            # 1. Check front pages for NEW canny posts (every 5 mins)
             boards = await discover_boards(valkey, limiter)
             for b in boards:
                 await limiter.acquire()
@@ -187,9 +219,32 @@ async def poller_loop():
                 posts = extract_board_posts(data)
                 for p in posts:
                     uname = p.get("postURLName")
-                    if uname and not await valkey.exists(f"post_cache_lite:{uname}"):
-                        await valkey.set(f"post_cache_lite:{uname}", "1")
-                        # Add to index or trigger checks...
+                    if not uname: continue
+                    p_url = f"https://feedback.vrchat.com/{b['urlName']}/p/{uname}"
+
+                    if await valkey.exists(f"post_cache_lite:{uname}"):
+                        break # Optimization: reached already indexed posts
+
+                    logger.info(f"New post discovered: {uname}")
+                    await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
+                    full_p = await poll_post(valkey, limiter, p_url, uname)
+                    if full_p:
+                        await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_p))
+
+            # 2. Poll EXISTING posts based on their calculated intervals
+            async for key in valkey.scan_iter("next_poll:*"):
+                url = key.split("next_poll:")[1]
+                nxt = await valkey.get(key)
+                if nxt and float(nxt) <= time.time():
+                    parts = url.split("/")
+                    if "p" in parts:
+                        name = parts[parts.index("p") + 1]
+                        p = await poll_post(valkey, limiter, url, name)
+                        if p:
+                            await valkey.set(key, time.time() + get_polling_interval(p))
+                        else:
+                            await valkey.set(key, time.time() + 3600)
+
         except: logger.exception("Poller loop error")
         await asyncio.sleep(300)
 

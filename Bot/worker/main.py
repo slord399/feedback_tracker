@@ -60,7 +60,7 @@ class Worker:
                 if job["type"] == "index_confirm":
                     gid = job["guild_id"]; cid = job["channel_id"]
                     await archive_url(job["url"])
-                    if job.get("original_message_id"): await self.purge_message(cid, job["original_message_id"], gid)
+                    if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
                     lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
                     await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
