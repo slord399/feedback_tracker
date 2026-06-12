@@ -19,7 +19,9 @@ from discord.ext import commands, tasks
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, register_guild, get_all_guilds
 from Bot.shared.localization import get_localizer
-from Bot.shared.canny import fetch_canny_data, extract_post_from_data
+from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts
+from Bot.shared.rate_limit import get_global_limiter
+from Bot.poller.main import discover_boards, poll_board_recursive
 from Bot.worker.embeds import create_canny_embed, create_canny_view
 
 logging.basicConfig(level=logging.INFO)
@@ -36,9 +38,10 @@ GUILD_ONLY_INSTALLS = app_commands.AppInstallationType(guild=True)
 GUILD_ONLY_CONTEXTS = app_commands.AppCommandContext(guild=True)
 
 class GuildSelect(ui.Select):
-    def __init__(self, bot, guilds, canny_url, message_id=None):
+    def __init__(self, bot, guilds, canny_url, message_id=None, lang="English"):
         options = [discord.SelectOption(label=g['name'], value=str(g['id'])) for g in guilds[:25]]
-        super().__init__(placeholder="Select server...", options=options)
+        placeholder = bot.localizer.get("select_server_placeholder", lang)
+        super().__init__(placeholder=placeholder, options=options)
         self.bot = bot
         self.canny_url = canny_url
         self.message_id = message_id
@@ -54,7 +57,10 @@ class GuildSelect(ui.Select):
         cfg = await valkey.hgetall(f"guild_config:{gid}")
         target_cid = int(cfg.get("status_channel") or interaction.channel_id)
         await valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": self.canny_url, "guild_id": int(gid), "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": self.message_id, "purge": False}))
-        await interaction.response.edit_message(content="Indexed!", view=None)
+        lang = "English"
+        if interaction.guild_id: lang = await self.bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+        msg = self.bot.localizer.get("indexed_msg", lang)
+        await interaction.response.edit_message(content=msg, view=None)
 
 class ResultSelect(ui.Select):
     def __init__(self, posts, lang="English", localizer=None):
@@ -84,17 +90,18 @@ class LanguageSelect(ui.Select):
         await interaction.response.edit_message(content=f"Language set to {lang}.", view=None)
 
 class MetricsSelectionView(ui.View):
-    def __init__(self, bot, category_prefix, interaction):
+    def __init__(self, bot, category_prefix, interaction, lang="English"):
         super().__init__(timeout=60)
         self.bot = bot
         self.category_prefix = category_prefix
         self.original_interaction = interaction
+        loc = bot.localizer
         if category_prefix == "trending":
-            self.add_item(ui.Button(label="Weekly", style=discord.ButtonStyle.primary, custom_id="trending_week"))
-            self.add_item(ui.Button(label="Monthly", style=discord.ButtonStyle.primary, custom_id="trending_month"))
+            self.add_item(ui.Button(label=loc.get("weekly_label", lang), style=discord.ButtonStyle.primary, custom_id="trending_week"))
+            self.add_item(ui.Button(label=loc.get("monthly_label", lang), style=discord.ButtonStyle.primary, custom_id="trending_month"))
         else:
-            self.add_item(ui.Button(label="Posts", style=discord.ButtonStyle.primary, custom_id="top_authors"))
-            self.add_item(ui.Button(label="Milestones", style=discord.ButtonStyle.primary, custom_id="top_milestones"))
+            self.add_item(ui.Button(label=loc.get("posts_label", lang), style=discord.ButtonStyle.primary, custom_id="top_authors"))
+            self.add_item(ui.Button(label=loc.get("milestones_label", lang), style=discord.ButtonStyle.primary, custom_id="top_milestones"))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         category = interaction.data.get("custom_id")
@@ -197,12 +204,12 @@ class SearchView(ui.View):
                 cfg = await self.bot.valkey.hgetall(f"guild_config:{gid}")
                 target_cid = int(cfg.get("status_channel") or interaction.channel_id)
                 await self.bot.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "purge": False}))
-                return await interaction.response.send_message("Indexed!", ephemeral=True)
+                return await interaction.response.send_message(self.bot.localizer.get("indexed_msg", self.lang), ephemeral=True)
         if not all_guilds:
-            return await interaction.response.send_message("Bot is not in any servers.", ephemeral=True)
+            return await interaction.response.send_message(self.bot.localizer.get("bot_not_in_servers", self.lang), ephemeral=True)
         view = ui.View()
-        view.add_item(GuildSelect(self.bot, all_guilds, url))
-        await interaction.response.send_message("Select server:", view=view, ephemeral=True)
+        view.add_item(GuildSelect(self.bot, all_guilds, url, lang=self.lang))
+        await interaction.response.send_message(self.bot.localizer.get("select_server_placeholder", self.lang), view=view, ephemeral=True)
 
     async def update_msg(self, interaction):
         start = self.page * 5
@@ -234,7 +241,7 @@ class SearchFilterView(ui.View):
             discord.SelectOption(label=loc.get("feature requests", self.lang), value="feature-requests"),
             discord.SelectOption(label=loc.get("bug reports", self.lang), value="bug-reports"),
             discord.SelectOption(label=loc.get("sdk bug & feature requests", self.lang), value="sdk-bug-reports"),
-            discord.SelectOption(label="Udon", value="udon"),
+            discord.SelectOption(label=loc.get("udon", self.lang), value="udon"),
             discord.SelectOption(label=loc.get("open beta", self.lang), value="open-beta")
         ])
         board_select.callback = self.select_boards_callback
@@ -246,7 +253,7 @@ class SearchFilterView(ui.View):
             discord.SelectOption(label=loc.get("planned", self.lang), value="planned"),
             discord.SelectOption(label=loc.get("in progress", self.lang), value="in-progress"),
             discord.SelectOption(label=loc.get("complete", self.lang), value="complete"),
-            discord.SelectOption(label="Available", value="available")
+            discord.SelectOption(label=loc.get("available in future release", self.lang), value="available in future release")
         ])
         status_select.callback = self.select_statuses_callback
         self.add_item(status_select)
@@ -347,6 +354,10 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
         self.loop.create_task(self.sync_guilds_to_valkey())
+
+        cmd_force = app_commands.Command(name="force_polling", description="Force polling of all Canny posts", callback=self.force_polling)
+        cmd_force.guild_only = True
+        self.tree.add_command(cmd_force)
         cmd_index = app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny)
         cmd_index.allowed_contexts = USER_APP_CONTEXTS
         cmd_index.allowed_installs = USER_APP_INSTALLS
@@ -442,10 +453,13 @@ class MyBot(commands.Bot):
                 except: pass
 
     async def index_this_canny(self, interaction: discord.Interaction, message: discord.Message):
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
         urls = [clean_url(u) for u in re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)]
         url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
         if not url:
-            return await interaction.response.send_message("No URL found in message.", ephemeral=True)
+            return await interaction.response.send_message(self.localizer.get("no_url_found", lang), ephemeral=True)
         lgid = await self.valkey.get(f"last_index_selection:{interaction.user.id}")
         all_guilds = await get_all_guilds(self.valkey)
         if lgid:
@@ -460,25 +474,28 @@ class MyBot(commands.Bot):
                 await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))
                 try: await message.edit(suppress=True)
                 except: pass
-                return await interaction.response.send_message("Indexed!", ephemeral=True)
+                return await interaction.response.send_message(self.localizer.get("indexed_msg", lang), ephemeral=True)
         if not all_guilds:
-            return await interaction.response.send_message("Bot is not in any servers.", ephemeral=True)
+            return await interaction.response.send_message(self.localizer.get("bot_not_in_servers", lang), ephemeral=True)
         view = ui.View()
-        view.add_item(GuildSelect(self, all_guilds, url, message.id))
-        await interaction.response.send_message("Select server:", view=view, ephemeral=True)
+        view.add_item(GuildSelect(self, all_guilds, url, message.id, lang=lang))
+        await interaction.response.send_message(self.localizer.get("select_server_placeholder", lang), view=view, ephemeral=True)
 
     async def check_canny_status(self, interaction: discord.Interaction, message: discord.Message):
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
         urls = [clean_url(u) for u in re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)]
         url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
         if not url:
-            return await interaction.response.send_message("No URL found in message.", ephemeral=True)
+            return await interaction.response.send_message(self.localizer.get("no_url_found", lang), ephemeral=True)
         await interaction.response.defer(ephemeral=False)
         data = await fetch_canny_data(url)
         parts = url.split("/")
         uname = parts[parts.index("p") + 1] if "p" in parts else None
         post = extract_post_from_data(data, uname)
         if not post:
-            return await interaction.followup.send("Post not found.", ephemeral=True)
+            return await interaction.followup.send(self.localizer.get("post_not_found", lang), ephemeral=True)
         lang = "English"
         if interaction.guild_id:
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
@@ -501,10 +518,18 @@ class MyBot(commands.Bot):
         await interaction.response.send_message(content)
 
     async def ctx_trending(self, interaction: discord.Interaction, message: discord.Message):
-        await interaction.response.send_message("Select timeframe:", view=MetricsSelectionView(self, "trending", interaction), ephemeral=False)
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+        msg = self.localizer.get("select_timeframe_msg", lang)
+        await interaction.response.send_message(msg, view=MetricsSelectionView(self, "trending", interaction, lang=lang), ephemeral=False)
 
     async def ctx_authors(self, interaction: discord.Interaction, message: discord.Message):
-        await interaction.response.send_message("Select metric:", view=MetricsSelectionView(self, "authors", interaction), ephemeral=False)
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+        msg = self.localizer.get("select_metric_msg", lang)
+        await interaction.response.send_message(msg, view=MetricsSelectionView(self, "authors", interaction, lang=lang), ephemeral=False)
 
     async def _send_metrics(self, interaction: discord.Interaction, category: str):
         await interaction.response.defer(ephemeral=False)
@@ -518,7 +543,7 @@ class MyBot(commands.Bot):
                 p_raw = await self.valkey.hget("canny_search_index", uname)
                 title = json.loads(p_raw).get('title', uname) if p_raw else uname
                 desc += f"{i}. **{title}** (+{int(score)} activity)\n"
-            embed.description = desc or "No data available."
+            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
         elif category == "trending_month":
             key = f"metrics:trending:month:{datetime.now().strftime('%Y-%m')}"
             data = await self.valkey.zrevrange(key, 0, 19, withscores=True)
@@ -527,23 +552,62 @@ class MyBot(commands.Bot):
                 p_raw = await self.valkey.hget("canny_search_index", uname)
                 title = json.loads(p_raw).get('title', uname) if p_raw else uname
                 desc += f"{i}. **{title}** (+{int(score)} activity)\n"
-            embed.description = desc or "No data available."
+            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
         elif category == "top_authors":
             data = await self.valkey.zrevrange("metrics:author_posts", 0, 19, withscores=True)
             desc = ""
             for i, (aid, count) in enumerate(data, 1):
                 name = await self.valkey.hget("metrics:author_names", aid) or aid
                 desc += f"{i}. **{name}**: {int(count)} posts\n"
-            embed.description = desc or "No data available."
+            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
         elif category == "top_milestones":
             data = await self.valkey.zrevrange("metrics:author_milestones", 0, 19, withscores=True)
             desc = ""
             for i, (aid, count) in enumerate(data, 1):
                 name = await self.valkey.hget("metrics:author_names", aid) or aid
                 desc += f"{i}. **{name}**: {int(count)} milestones (25+ votes)\n"
-            embed.description = desc or "No data available."
+            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
 
         await interaction.followup.send(embed=embed, ephemeral=False)
+
+    async def force_polling(self, interaction: discord.Interaction):
+        if interaction.guild_id != 590756888254349315:
+            return await interaction.response.send_message("This command is only available in the admin guild.", ephemeral=True)
+        if not interaction.user.guild_permissions.manage_messages:
+            return await interaction.response.send_message("Missing 'Manage Messages' permission.", ephemeral=True)
+
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+
+        await interaction.response.send_message(self.localizer.get("polling_started", lang))
+        self.loop.create_task(self.do_force_polling(interaction, lang))
+
+    async def do_force_polling(self, interaction, lang):
+        valkey = self.valkey
+        limiter = get_global_limiter(valkey)
+        boards = await discover_boards(valkey, limiter)
+
+        discovered_count = 0
+        board_results = {}
+
+        async def progress_callback(n):
+            nonlocal discovered_count
+            discovered_count += n
+            if discovered_count % 1000 == 0:
+                msg = self.localizer.get("polling_progress", lang, count=discovered_count)
+                try: await interaction.channel.send(msg)
+                except: pass
+
+        for b in boards:
+            count = await poll_board_recursive(valkey, limiter, b, force=True, progress_callback=progress_callback)
+            board_results[b['name']] = count
+
+        summary = self.localizer.get("polling_complete", lang) + "\n"
+        for name, count in board_results.items():
+            summary += f"- **{name}**: {count}\n"
+        try: await interaction.channel.send(summary)
+        except: pass
 
 bot = MyBot()
 
@@ -714,6 +778,9 @@ async def update_localization(interaction: discord.Interaction):
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
 async def test_feed(interaction: discord.Interaction, canny_url: str):
+    lang = "English"
+    if interaction.guild_id:
+        lang = await bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
     url = clean_url(canny_url)
     await interaction.response.defer(ephemeral=True)
     data = await fetch_canny_data(url)
@@ -721,10 +788,7 @@ async def test_feed(interaction: discord.Interaction, canny_url: str):
     uname = parts[parts.index("p") + 1] if "p" in parts else None
     post = extract_post_from_data(data, uname)
     if not post:
-        return await interaction.followup.send("Post not found.", ephemeral=True)
-    lang = "English"
-    if interaction.guild_id:
-        lang = await bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+        return await interaction.followup.send(bot.localizer.get("post_not_found", lang), ephemeral=True)
     user_info = {"type": "requested", "name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)}
     embed = create_canny_embed(post, lang=lang, user_info=user_info)
     await interaction.followup.send(embed=embed, view=create_canny_view(url), ephemeral=True)
