@@ -146,6 +146,7 @@ async def poll_board_recursive(valkey, limiter, board):
 
                     if score >= 25:
                         await valkey.sadd("indexed_post_urls", p_url)
+                        await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": ""})
 
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
                 await valkey.set(f"post_full_cache:{p_url}", json.dumps(full_post), ex=86400)
@@ -247,6 +248,8 @@ async def poll_post(valkey, limiter, url, url_name):
             await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
             await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
             await valkey.sadd("indexed_post_urls", url)
+            if not await valkey.exists(f"post_indexer_info:{url}"):
+                await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": ""})
             if author_id:
                 milestone_delta = current_milestone - last_milestone
                 await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
@@ -264,6 +267,7 @@ async def poll_post(valkey, limiter, url, url_name):
 
         if score >= 25:
             await valkey.sadd("indexed_post_urls", url)
+            await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": ""})
 
     await valkey.set(f"post_cache:{pid}", json.dumps(post))
     await valkey.set(f"post_full_cache:{url}", json.dumps(post), ex=86400)
