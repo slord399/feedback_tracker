@@ -37,18 +37,32 @@ class Worker:
         self.token = t.strip() if t else None
         self.base_url = "https://discord.com/api/v10"
 
-    async def send_request(self, method, endpoint, payload=None, guild_id=None):
+    async def send_request(self, method, endpoint, payload=None, guild_id=None, files=None):
         await self.global_limiter.acquire()
         if guild_id: await self.guild_limiter.acquire(str(guild_id))
         url = f"{self.base_url}{endpoint}"
-        headers = {"Authorization": f"Bot {self.token}", "Content-Type": "application/json"}
+        headers = {"Authorization": f"Bot {self.token}"}
+
         async with aiohttp.ClientSession() as session:
-            async with session.request(method, url, headers=headers, json=payload) as resp:
-                if resp.status == 429:
-                    retry_after = (await resp.json()).get("retry_after", 1)
-                    await asyncio.sleep(retry_after)
-                    return await self.send_request(method, endpoint, payload, guild_id)
-                return resp.status, await resp.json() if resp.status != 204 else None
+            if files:
+                data = aiohttp.FormData()
+                data.add_field('payload_json', json.dumps(payload))
+                for name, (fname, content, ftype) in files.items():
+                    data.add_field(name, content, filename=fname, content_type=ftype)
+                async with session.request(method, url, headers=headers, data=data) as resp:
+                    if resp.status == 429:
+                        retry_after = (await resp.json()).get("retry_after", 1)
+                        await asyncio.sleep(retry_after)
+                        return await self.send_request(method, endpoint, payload, guild_id, files)
+                    return resp.status, await resp.json() if resp.status != 204 else None
+            else:
+                headers["Content-Type"] = "application/json"
+                async with session.request(method, url, headers=headers, json=payload) as resp:
+                    if resp.status == 429:
+                        retry_after = (await resp.json()).get("retry_after", 1)
+                        await asyncio.sleep(retry_after)
+                        return await self.send_request(method, endpoint, payload, guild_id)
+                    return resp.status, await resp.json() if resp.status != 204 else None
 
     async def purge_message(self, channel_id, message_id, guild_id=None):
         await self.send_request("DELETE", f"/channels/{channel_id}/messages/{message_id}", guild_id=guild_id)
@@ -79,7 +93,8 @@ class Worker:
                     if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
                     lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
-                    await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
+                    files = self.get_milestone_file(post)
+                    await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
 
                     for oid in await get_active_guilds(self.valkey):
                         if str(oid) == str(gid): continue
@@ -88,14 +103,16 @@ class Worker:
                         if mode == "global" and cfg.get("status_channel"):
                             await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
                             oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Global Request", "icon": None}, lang=cfg.get("language", "English"))
-                            await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid)
+                            files = self.get_milestone_file(post)
+                            await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid, files=files)
 
                 elif job["type"] == "check_status":
                     gid = job.get("guild_id")
                     lang = "English"
                     if gid: lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, lang=lang)
-                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
+                    files = self.get_milestone_file(post)
+                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
 
                 elif job["type"] in ["status_change", "vote_progress"]:
                     await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
@@ -117,7 +134,8 @@ class Worker:
                                 if mode == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
                                 lang = cfg.get("language") or "English"
                                 emb = create_canny_embed(post, old_status=job.get("old_status"), lang=lang)
-                                await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid)
+                                files = self.get_milestone_file(post)
+                                await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
             except (redis.exceptions.TimeoutError, asyncio.TimeoutError): continue
             except Exception: logger.exception("Worker error")
 
@@ -126,5 +144,21 @@ class Worker:
         for i in view.children:
             if isinstance(i, discord.ui.Button): cs.append({"type": 2, "style": 5, "label": i.label, "url": i.url})
         return [{"type": 1, "components": cs}] if cs else []
+
+    def get_milestone_file(self, post):
+        status = post.get("status", "").lower()
+        score = post.get("score", 0)
+        fname = None
+        if status in ["complete", "completed", "available in future release"]:
+            fname = "Completed.png"
+        elif score >= 25:
+            fname = "25_plus_milestone.png"
+
+        if fname:
+            path = os.path.join("Img", fname)
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    return {"file": (fname, f.read(), "image/png")}
+        return None
 
 if __name__ == "__main__": asyncio.run(Worker().run())

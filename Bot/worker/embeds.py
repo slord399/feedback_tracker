@@ -20,6 +20,11 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
     category = post.get("category")
     category_raw = category.get("name", "None") if category else "None"
     category_name = loc.get(category_raw.lower(), lang)
+    if category_name == "bug report" and lang != "English":
+        alt = loc.get("bug reports", lang)
+        if alt != "bug reports":
+            category_name = alt
+
     if board:
         board_raw = board.get('name', 'None')
         board_name = loc.get(board_raw.lower(), lang)
@@ -38,7 +43,13 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
         created_display = f"<t:{int(dt.timestamp())}:R>"
     except: created_display = created_ts
 
-    votes = str(post.get("score", 0))
+    score = post.get("score", 0)
+    votes = str(score)
+
+    if current_status.lower() in ["complete", "completed", "available in future release"]:
+        embed.set_thumbnail(url="attachment://Completed.png")
+    elif score >= 25:
+        embed.set_thumbnail(url="attachment://25_plus_milestone.png")
 
     # Using Embed Fields for perfect alignment
     description = f"{details}\n\n**{loc.get('category', lang)}**\n{category_name}\n\n"

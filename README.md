@@ -25,7 +25,7 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 - `/settings`: View current server configuration, including mode and target channels.
 - `/mode`: Toggle between **Global** (track everything) and **Local** (track only what you index) modes.
 - `/set_status_channel`: Select the channel where status updates and notifications will be posted.
-- `/react_channel add/remove`: Manage channels where the bot will automatically listen for and index Canny links.
+- `/react_channel`: Manage channels where the bot will automatically listen for and index Canny links (Add/Remove).
 - `/set_language`: Choose the preferred language for the bot's interface.
 - `/bulk_add`: Quickly index all Canny links found in a channel's recent history.
 

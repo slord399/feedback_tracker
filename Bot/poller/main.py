@@ -109,14 +109,21 @@ async def poll_board_recursive(valkey, limiter, board):
                         await valkey.expire(month_key, 2592000 * 2)
 
                     if old.get("status") != status:
-                        await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": full_post, "old_status": old.get("status"), "url": p_url}))
-                        if author_id and status.lower() in ["complete", "completed", "available in future release"]:
-                            await valkey.zincrby("metrics:author_milestones", 1, author_id)
+                        last_notified_status = await valkey.get(f"notified_status:{pid}")
+                        if last_notified_status != status:
+                            await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": full_post, "old_status": old.get("status"), "url": p_url}))
+                            await valkey.set(f"notified_status:{pid}", status)
+                            if author_id and status.lower() in ["complete", "completed", "available in future release"]:
+                                await valkey.zincrby("metrics:author_milestones", 1, author_id)
 
-                    if (score // 25) > (old_score // 25):
+                    current_milestone = score // 25
+                    last_notified_milestone = await valkey.get(f"notified_milestone:{pid}")
+                    last_milestone = int(last_notified_milestone) if last_notified_milestone else (old_score // 25)
+                    if current_milestone > last_milestone:
                         await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
+                        await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
                         if author_id:
-                            milestone_delta = (score // 25) - (old_score // 25)
+                            milestone_delta = current_milestone - last_milestone
                             await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
                 else:
                     if author_id:
@@ -127,8 +134,17 @@ async def poll_board_recursive(valkey, limiter, board):
                         if milestones > 0:
                             await valkey.zincrby("metrics:author_milestones", milestones, author_id)
 
+                    # Initial discovery: don't notify unless it's new enough?
+                    # User said: "polling once again after reach 25+ milestone, bot trigger 25+ milestone embed feed once again"
+                    # We should probably only notify if it's actually a new event for us.
+                    # For historical crawl, we probably don't want to notify.
+                    # But for "Index this Canny", we DO want to notify (that's handled by worker though).
+
+                    # Set initial notified states to prevent duplicate notifications on next poll
+                    await valkey.set(f"notified_status:{pid}", status)
+                    await valkey.set(f"notified_milestone:{pid}", str(score // 25))
+
                     if score >= 25:
-                        await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
                         await valkey.sadd("indexed_post_urls", p_url)
 
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
@@ -158,7 +174,7 @@ async def poll_board_recursive(valkey, limiter, board):
 
         if not has_next: break
         page += 1
-        if page > 1000: break
+        if page > 5000: break
 
     await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=3600)
     logger.info(f"Board {board['name']} crawl complete. Total: {total_indexed}")
@@ -217,14 +233,22 @@ async def poll_post(valkey, limiter, url, url_name):
             await valkey.expire(month_key, 2592000 * 2)
 
         if old_status != status:
-            await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": post, "old_status": old_status, "url": url}))
-            if author_id and status.lower() in ["complete", "completed", "available in future release"]:
-                await valkey.zincrby("metrics:author_milestones", 1, author_id)
-        if (score // 25) > (old_score // 25):
+            last_notified_status = await valkey.get(f"notified_status:{pid}")
+            if last_notified_status != status:
+                await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": post, "old_status": old_status, "url": url}))
+                await valkey.set(f"notified_status:{pid}", status)
+                if author_id and status.lower() in ["complete", "completed", "available in future release"]:
+                    await valkey.zincrby("metrics:author_milestones", 1, author_id)
+
+        current_milestone = score // 25
+        last_notified_milestone = await valkey.get(f"notified_milestone:{pid}")
+        last_milestone = int(last_notified_milestone) if last_notified_milestone else (old_score // 25)
+        if current_milestone > last_milestone:
             await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+            await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
             await valkey.sadd("indexed_post_urls", url)
             if author_id:
-                milestone_delta = (score // 25) - (old_score // 25)
+                milestone_delta = current_milestone - last_milestone
                 await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
     else:
         if author_id:
@@ -235,8 +259,10 @@ async def poll_post(valkey, limiter, url, url_name):
             if milestones > 0:
                 await valkey.zincrby("metrics:author_milestones", milestones, author_id)
 
+        await valkey.set(f"notified_status:{pid}", status)
+        await valkey.set(f"notified_milestone:{pid}", str(score // 25))
+
         if score >= 25:
-            await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
             await valkey.sadd("indexed_post_urls", url)
 
     await valkey.set(f"post_cache:{pid}", json.dumps(post))

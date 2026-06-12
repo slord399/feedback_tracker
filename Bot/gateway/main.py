@@ -57,7 +57,7 @@ class GuildSelect(ui.Select):
         await interaction.response.edit_message(content="Indexed!", view=None)
 
 class ResultSelect(ui.Select):
-    def __init__(self, posts):
+    def __init__(self, posts, lang="English", localizer=None):
         options = []
         for p in posts:
             val = p['url']
@@ -66,7 +66,8 @@ class ResultSelect(ui.Select):
                 if "p" in parts: val = "NAME:" + parts[parts.index("p") + 1][:95]
                 else: val = val[-100:]
             options.append(discord.SelectOption(label=p['title'][:100], value=val, description=p['url'][-50:]))
-        super().__init__(placeholder="Select a post...", options=options)
+        placeholder = localizer.get("select_post_placeholder", lang) if localizer else "Select a post..."
+        super().__init__(placeholder=placeholder, options=options)
     async def callback(self, interaction: discord.Interaction):
         self.view.selected_url = self.values[0]
         await interaction.response.defer()
@@ -102,40 +103,42 @@ class MetricsSelectionView(ui.View):
         return True
 
 class SearchView(ui.View):
-    def __init__(self, results, page=0, bot=None, ephemeral=True):
+    def __init__(self, results, page=0, bot=None, ephemeral=True, lang="English"):
         super().__init__()
         self.results = results
         self.page = page
         self.bot = bot
         self.selected_url = None
         self.ephemeral = ephemeral
+        self.lang = lang
         self.update_components()
 
     def update_components(self):
         self.clear_items()
+        loc = self.bot.localizer
         start = self.page * 5
         end = start + 5
         current_posts = self.results[start:end]
         if current_posts:
-            self.add_item(ResultSelect(current_posts))
+            self.add_item(ResultSelect(current_posts, lang=self.lang, localizer=loc))
 
-        prev_btn = ui.Button(label="Prev", style=discord.ButtonStyle.grey, disabled=(self.page == 0))
+        prev_btn = ui.Button(label=loc.get("prev_label", self.lang), style=discord.ButtonStyle.grey, disabled=(self.page == 0))
         prev_btn.callback = self.prev
         self.add_item(prev_btn)
 
-        next_btn = ui.Button(label="Next", style=discord.ButtonStyle.grey, disabled=(end >= len(self.results)))
+        next_btn = ui.Button(label=loc.get("next_label", self.lang), style=discord.ButtonStyle.grey, disabled=(end >= len(self.results)))
         next_btn.callback = self.next
         self.add_item(next_btn)
 
-        post_pub = ui.Button(label="Post (Public)", style=discord.ButtonStyle.primary)
+        post_pub = ui.Button(label=loc.get("post_public_label", self.lang), style=discord.ButtonStyle.primary)
         post_pub.callback = self.post_public
         self.add_item(post_pub)
 
-        post_priv = ui.Button(label="Post (Private)", style=discord.ButtonStyle.primary)
+        post_priv = ui.Button(label=loc.get("post_private_label", self.lang), style=discord.ButtonStyle.primary)
         post_priv.callback = self.post_private
         self.add_item(post_priv)
 
-        index_btn = ui.Button(label="Index", style=discord.ButtonStyle.green)
+        index_btn = ui.Button(label=loc.get("index_label", self.lang), style=discord.ButtonStyle.green)
         index_btn.callback = self.index_selected
         self.add_item(index_btn)
 
@@ -165,7 +168,8 @@ class SearchView(ui.View):
 
     async def _do_post(self, interaction: discord.Interaction, ephemeral: bool):
         if not self.selected_url:
-            return await interaction.response.send_message("Select a post.", ephemeral=True)
+            msg = self.bot.localizer.get("select_post_msg", self.lang)
+            return await interaction.response.send_message(msg, ephemeral=True)
         url = await self.get_real_url(self.selected_url)
         await interaction.response.defer(ephemeral=ephemeral)
         data = await fetch_canny_data(url)
@@ -202,57 +206,79 @@ class SearchView(ui.View):
     async def update_msg(self, interaction):
         start = self.page * 5
         end = start + 5
-        embed = discord.Embed(title="Search Results", color=discord.Color.blue())
+        loc = self.bot.localizer
+        title = loc.get("search_results_title", self.lang)
+        embed = discord.Embed(title=title, color=discord.Color.blue())
         for r in self.results[start:end]:
             created = f"<t:{int(r.get('created', 0))}:R>" if r.get('created') else "Unknown"
-            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**Status:** {r.get('status', 'open')} | **Votes:** {r.get('score', 0)} | **Created:** {created}", inline=False)
+            status_localized = loc.get(r.get('status', 'open').lower(), self.lang)
+            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**{loc.get('status', self.lang)}:** {status_localized} | **{loc.get('votes', self.lang)}:** {r.get('score', 0)} | **{loc.get('created', self.lang)}:** {created}", inline=False)
         await interaction.response.edit_message(embed=embed, view=self, content=None)
 
 class SearchFilterView(ui.View):
-    def __init__(self, bot, ephemeral=True):
+    def __init__(self, bot, ephemeral=True, lang="English"):
         super().__init__()
         self.bot = bot
         self.ephemeral = ephemeral
+        self.lang = lang
         self.boards = []
         self.statuses = []
+        self.update_components()
 
-    @ui.select(cls=ui.Select, placeholder="Select Boards", min_values=0, max_values=5, options=[
-        discord.SelectOption(label="Feature Requests", value="feature-requests"),
-        discord.SelectOption(label="Bug Reports", value="bug-reports"),
-        discord.SelectOption(label="SDK Bug Reports", value="sdk-bug-reports"),
-        discord.SelectOption(label="Udon", value="udon"),
-        discord.SelectOption(label="Open Beta", value="open-beta")
-    ])
-    async def select_boards(self, interaction: discord.Interaction, select: ui.Select):
-        self.boards = select.values
+    def update_components(self):
+        self.clear_items()
+        loc = self.bot.localizer
+
+        board_select = ui.Select(placeholder=loc.get("select_boards", self.lang), min_values=0, max_values=5, options=[
+            discord.SelectOption(label=loc.get("feature requests", self.lang), value="feature-requests"),
+            discord.SelectOption(label=loc.get("bug reports", self.lang), value="bug-reports"),
+            discord.SelectOption(label=loc.get("sdk bug & feature requests", self.lang), value="sdk-bug-reports"),
+            discord.SelectOption(label="Udon", value="udon"),
+            discord.SelectOption(label=loc.get("open beta", self.lang), value="open-beta")
+        ])
+        board_select.callback = self.select_boards_callback
+        self.add_item(board_select)
+
+        status_select = ui.Select(placeholder=loc.get("select_statuses", self.lang), min_values=0, max_values=5, options=[
+            discord.SelectOption(label=loc.get("open", self.lang), value="open"),
+            discord.SelectOption(label=loc.get("tracked", self.lang), value="tracked"),
+            discord.SelectOption(label=loc.get("planned", self.lang), value="planned"),
+            discord.SelectOption(label=loc.get("in progress", self.lang), value="in-progress"),
+            discord.SelectOption(label=loc.get("complete", self.lang), value="complete"),
+            discord.SelectOption(label="Available", value="available")
+        ])
+        status_select.callback = self.select_statuses_callback
+        self.add_item(status_select)
+
+        execute_btn = ui.Button(label=loc.get("enter_metrics_execute", self.lang), style=discord.ButtonStyle.green)
+        execute_btn.callback = self.execute_search
+        self.add_item(execute_btn)
+
+    async def select_boards_callback(self, interaction: discord.Interaction):
+        self.boards = interaction.data.get("values", [])
         await interaction.response.defer()
 
-    @ui.select(cls=ui.Select, placeholder="Select Statuses", min_values=0, max_values=5, options=[
-        discord.SelectOption(label="Open", value="open"),
-        discord.SelectOption(label="Tracked", value="tracked"),
-        discord.SelectOption(label="Planned", value="planned"),
-        discord.SelectOption(label="In Progress", value="in-progress"),
-        discord.SelectOption(label="Complete", value="complete"),
-        discord.SelectOption(label="Available", value="available")
-    ])
-    async def select_statuses(self, interaction: discord.Interaction, select: ui.Select):
-        self.statuses = select.values
+    async def select_statuses_callback(self, interaction: discord.Interaction):
+        self.statuses = interaction.data.get("values", [])
         await interaction.response.defer()
 
-    @ui.button(label="Enter Metrics & Execute", style=discord.ButtonStyle.green)
-    async def execute_search(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(SearchQueryModal(self))
+    async def execute_search(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(SearchQueryModal(self, self.lang))
 
-class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
-    query = ui.TextInput(label='Query Keywords', placeholder='Title or description...', required=False)
-    min_votes = ui.TextInput(label='Min Votes', placeholder='0', default='0', required=False)
-    max_votes = ui.TextInput(label='Max Votes', placeholder='9999', required=False)
-    min_comments = ui.TextInput(label='Min Comments', placeholder='0', default='0', required=False)
-    date_range = ui.TextInput(label='Date Range', placeholder='YYYY-MM-DD to YYYY-MM-DD', required=False)
-
-    def __init__(self, filter_view):
-        super().__init__()
+class SearchQueryModal(ui.Modal):
+    def __init__(self, filter_view, lang):
+        loc = filter_view.bot.localizer
+        super().__init__(title=loc.get('search_metrics_title', lang))
         self.filter_view = filter_view
+        self.lang = lang
+
+        self.query = ui.TextInput(label=loc.get('query_keywords_label', lang), placeholder=loc.get('query_keywords_placeholder', lang), required=False)
+        self.min_votes = ui.TextInput(label=loc.get('min_votes_label', lang), placeholder='0', default='0', required=False)
+        self.max_votes = ui.TextInput(label=loc.get('max_votes_label', lang), placeholder='9999', required=False)
+        self.min_comments = ui.TextInput(label=loc.get('min_comments_label', lang), placeholder='0', default='0', required=False)
+        self.date_range = ui.TextInput(label=loc.get('date_range_label', lang), placeholder=loc.get('date_range_placeholder', lang), required=False)
+
+        self.add_item(self.query); self.add_item(self.min_votes); self.add_item(self.max_votes); self.add_item(self.min_comments); self.add_item(self.date_range)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=self.filter_view.ephemeral)
@@ -286,12 +312,15 @@ class SearchQueryModal(ui.Modal, title='Enter Search Metrics'):
                     res.append(p)
             if cursor == 0 or len(res) > 500: break
         res.sort(key=lambda x: x.get('score', 0), reverse=True)
+        loc = self.filter_view.bot.localizer
         if not res: return await interaction.followup.send("No results.", ephemeral=self.filter_view.ephemeral)
-        view = SearchView(res, bot=self.filter_view.bot, ephemeral=self.filter_view.ephemeral)
-        embed = discord.Embed(title="Search Results", color=discord.Color.blue())
+        view = SearchView(res, bot=self.filter_view.bot, ephemeral=self.filter_view.ephemeral, lang=self.lang)
+        title = loc.get("search_results_title", self.lang)
+        embed = discord.Embed(title=title, color=discord.Color.blue())
         for r in res[:5]:
             created = f"<t:{int(r.get('created', 0))}:R>" if r.get('created') else "Unknown"
-            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**Status:** {r.get('status', 'open')} | **Votes:** {r.get('score', 0)} | **Created:** {created}", inline=False)
+            status_localized = loc.get(r.get('status', 'open').lower(), self.lang)
+            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**{loc.get('status', self.lang)}:** {status_localized} | **{loc.get('votes', self.lang)}:** {r.get('score', 0)} | **{loc.get('created', self.lang)}:** {created}", inline=False)
         await interaction.followup.send(embed=embed, view=view, ephemeral=self.filter_view.ephemeral)
 
 class MyBot(commands.Bot):
@@ -462,13 +491,13 @@ class MyBot(commands.Bot):
         await interaction.response.send_message(content)
 
     async def ctx_trending(self, interaction: discord.Interaction, message: discord.Message):
-        await interaction.response.send_message("Select timeframe:", view=MetricsSelectionView(self, "trending", interaction), ephemeral=True)
+        await interaction.response.send_message("Select timeframe:", view=MetricsSelectionView(self, "trending", interaction), ephemeral=False)
 
     async def ctx_authors(self, interaction: discord.Interaction, message: discord.Message):
-        await interaction.response.send_message("Select metric:", view=MetricsSelectionView(self, "authors", interaction), ephemeral=True)
+        await interaction.response.send_message("Select metric:", view=MetricsSelectionView(self, "authors", interaction), ephemeral=False)
 
     async def _send_metrics(self, interaction: discord.Interaction, category: str):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
         embed = discord.Embed(title=f"Metrics: {category.replace('_', ' ').title()}", color=discord.Color.gold())
 
         if category == "trending_week":
@@ -515,7 +544,11 @@ bot = MyBot()
 @app_commands.allowed_installs(guilds=True, users=True)
 async def search(interaction: discord.Interaction, visibility: str = "ephemeral"):
     ephemeral = (visibility == "ephemeral")
-    await interaction.response.send_message("Configure filters:", view=SearchFilterView(bot, ephemeral=ephemeral), ephemeral=True)
+    lang = "English"
+    if interaction.guild_id:
+        lang = await bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+    msg = bot.localizer.get("configure_filters_msg", lang)
+    await interaction.response.send_message(msg, view=SearchFilterView(bot, ephemeral=ephemeral, lang=lang), ephemeral=True)
 
 @bot.tree.command(name="settings", description="View current server configuration")
 @app_commands.allowed_contexts(guilds=True)
@@ -539,14 +572,14 @@ async def settings(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="ping", description="Check Discord API latency")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
 @bot.tree.command(name="stats", description="View bot and indexing statistics")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def stats(interaction: discord.Interaction):
     await interaction.response.defer()
     idx = await bot.valkey.scard("indexed_post_urls")
@@ -559,8 +592,8 @@ async def stats(interaction: discord.Interaction):
     await interaction.followup.send(msg)
 
 @bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(title="Canny Bot Help Article", color=discord.Color.blue())
     embed.add_field(name="General Commands", value="**/search**: Interactive search.\n**/stats**: Activity metrics.\n**/ping**: Latency check.\n**/credit**: Affiliation and donation info.", inline=False)
@@ -570,8 +603,8 @@ async def help_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="credit", description="View bot credits, hosting, and affiliation")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def credit(interaction: discord.Interaction):
     msg = "**This bot is not affiliated with VRChat Inc.**\n\nHosted by [VRCβフォース](<https://discord.gg/XJHRXwd>) | [VRChat Group](<https://vrc.group/BETAJP.2222>).\nLocalization: [Google Sheet](<https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing>).\nOpen Source: [GitHub](<https://github.com/slord399/feedback_tracker/>).\nLegal: [Terms of Service](<https://github.com/slord399/feedback_tracker/blob/main/Terms/tos.md>) | [Privacy Policy](<https://github.com/slord399/feedback_tracker/blob/main/Terms/privacy.md>).\nDonations: [X (formerly Twitter)](<https://x.com/slord399/creator-subscriptions/subscribe>) | [Ko-fi](<https://ko-fi.com/tony_lewis>) | [GitHub Sponsors](<https://github.com/sponsors/slord399/>)."
     await interaction.response.send_message(msg, ephemeral=True)
@@ -584,8 +617,8 @@ async def credit(interaction: discord.Interaction):
     app_commands.Choice(name="Top 20 canny author", value="top_authors"),
     app_commands.Choice(name="Top 20 canny author reach milestone", value="top_milestones")
 ])
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def metrics_cmd(interaction: discord.Interaction, category: str):
     await bot._send_metrics(interaction, category)
 
@@ -612,22 +645,23 @@ async def set_status_channel(interaction: discord.Interaction, channel: discord.
     await register_guild(bot.valkey, interaction.guild_id)
     await interaction.response.send_message("Status channel set.")
 
-react_group = app_commands.Group(name="react_channel", description="Manage auto-indexing channels")
-
-@react_group.command(name="add", description="Add a channel for auto-indexing")
+@bot.tree.command(name="react_channel", description="Manage channels for auto-indexing")
+@app_commands.describe(action="Add or remove a channel", channel="The channel to manage")
+@app_commands.choices(action=[
+    app_commands.Choice(name="Add", value="add"),
+    app_commands.Choice(name="Remove", value="remove")
+])
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
-async def react_add(interaction: discord.Interaction, channel: discord.TextChannel):
-    await bot.valkey.sadd(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
-    await register_guild(bot.valkey, interaction.guild_id)
-    await interaction.response.send_message(f"Added <#{channel.id}> to react channels.")
-
-@react_group.command(name="remove", description="Remove a channel from auto-indexing")
-@app_commands.checks.has_permissions(manage_messages=True)
-async def react_remove(interaction: discord.Interaction, channel: discord.TextChannel):
-    await bot.valkey.srem(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
-    await interaction.response.send_message(f"Removed <#{channel.id}> from react channels.")
-
-bot.tree.add_command(react_group)
+async def react_channel(interaction: discord.Interaction, action: str, channel: discord.TextChannel):
+    if action == "add":
+        await bot.valkey.sadd(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
+        await register_guild(bot.valkey, interaction.guild_id)
+        await interaction.response.send_message(f"Added <#{channel.id}> to react channels.")
+    else:
+        await bot.valkey.srem(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
+        await interaction.response.send_message(f"Removed <#{channel.id}> from react channels.")
 
 @bot.tree.command(name="bulk_add", description="Index URLs from channel history")
 @app_commands.allowed_contexts(guilds=True)
@@ -666,8 +700,8 @@ async def update_localization(interaction: discord.Interaction):
     await interaction.response.send_message("Updated." if success else "Failed.")
 
 @bot.tree.command(name="test_feed", description="Test embed rendering")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def test_feed(interaction: discord.Interaction, canny_url: str):
     url = clean_url(canny_url)
     await interaction.response.defer(ephemeral=True)

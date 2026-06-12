@@ -31,7 +31,10 @@ async def fetch_canny_data(url: str, retry_fallback=True):
                         return await fetch_canny_data(fallback_url, retry_fallback=False)
 
             if response.status != 200:
-                logger.error(f"Failed to fetch {url}, status: {response.status}")
+                if response.status == 404:
+                    logger.info(f"Failed to fetch {url}, status: 404")
+                else:
+                    logger.error(f"Failed to fetch {url}, status: {response.status}")
                 return None
             html = await response.text()
 
@@ -51,9 +54,9 @@ async def fetch_canny_data(url: str, retry_fallback=True):
                                 data_str = data_str.replace(":undefined", ":null")
                                 return json.loads(data_str)
                         except Exception as e:
-                            logger.error(f"Error parsing {var_name} in {url}: {e}")
+                            logger.info(f"Error parsing {var_name} in {url}: {e}")
     except Exception as e:
-        logger.error(f"Fetch error {url}: {e}")
+        logger.info(f"Fetch error {url}: {e}")
     return None
 
 def extract_post_from_data(data, post_url_name=None):
