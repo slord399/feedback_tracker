@@ -340,28 +340,28 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
         cmd_index = app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny)
-        cmd_index.allowed_contexts = GUILD_ONLY_CONTEXTS
-        cmd_index.allowed_installs = GUILD_ONLY_INSTALLS
+        cmd_index.allowed_contexts = USER_APP_CONTEXTS
+        cmd_index.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_index)
 
         cmd_status = app_commands.ContextMenu(name="Check canny status", callback=self.check_canny_status)
-        cmd_status.allowed_contexts = GUILD_ONLY_CONTEXTS
-        cmd_status.allowed_installs = GUILD_ONLY_INSTALLS
+        cmd_status.allowed_contexts = USER_APP_CONTEXTS
+        cmd_status.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_status)
 
         cmd_hour = app_commands.ContextMenu(name="Post what I indexed in hour", callback=self.post_indexed_hour)
-        cmd_hour.allowed_contexts = GUILD_ONLY_CONTEXTS
-        cmd_hour.allowed_installs = GUILD_ONLY_INSTALLS
+        cmd_hour.allowed_contexts = USER_APP_CONTEXTS
+        cmd_hour.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_hour)
 
         cmd_trending = app_commands.ContextMenu(name="Check Trending Canny", callback=self.ctx_trending)
-        cmd_trending.allowed_contexts = GUILD_ONLY_CONTEXTS
-        cmd_trending.allowed_installs = GUILD_ONLY_INSTALLS
+        cmd_trending.allowed_contexts = USER_APP_CONTEXTS
+        cmd_trending.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_trending)
 
         cmd_authors = app_commands.ContextMenu(name="Check Canny Author Metrics", callback=self.ctx_authors)
-        cmd_authors.allowed_contexts = GUILD_ONLY_CONTEXTS
-        cmd_authors.allowed_installs = GUILD_ONLY_INSTALLS
+        cmd_authors.allowed_contexts = USER_APP_CONTEXTS
+        cmd_authors.allowed_installs = USER_APP_INSTALLS
         self.tree.add_command(cmd_authors)
 
         if self.shard_id is None or self.shard_id == 0:
@@ -572,14 +572,14 @@ async def settings(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="ping", description="Check Discord API latency")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! {round(bot.latency*1000)}ms")
 
 @bot.tree.command(name="stats", description="View bot and indexing statistics")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def stats(interaction: discord.Interaction):
     await interaction.response.defer()
     idx = await bot.valkey.scard("indexed_post_urls")
@@ -592,8 +592,8 @@ async def stats(interaction: discord.Interaction):
     await interaction.followup.send(msg)
 
 @bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def help_cmd(interaction: discord.Interaction):
     embed = discord.Embed(title="Canny Bot Help Article", color=discord.Color.blue())
     embed.add_field(name="General Commands", value="**/search**: Interactive search.\n**/stats**: Activity metrics.\n**/ping**: Latency check.\n**/credit**: Affiliation and donation info.", inline=False)
@@ -603,8 +603,8 @@ async def help_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="credit", description="View bot credits, hosting, and affiliation")
-@app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@app_commands.allowed_installs(guilds=True, users=True)
+@app_commands.allowed_contexts(guilds=True)
+@app_commands.allowed_installs(guilds=True)
 async def credit(interaction: discord.Interaction):
     msg = "**This bot is not affiliated with VRChat Inc.**\n\nHosted by [VRCβフォース](<https://discord.gg/XJHRXwd>) | [VRChat Group](<https://vrc.group/BETAJP.2222>).\nLocalization: [Google Sheet](<https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing>).\nOpen Source: [GitHub](<https://github.com/slord399/feedback_tracker/>).\nLegal: [Terms of Service](<https://github.com/slord399/feedback_tracker/blob/main/Terms/tos.md>) | [Privacy Policy](<https://github.com/slord399/feedback_tracker/blob/main/Terms/privacy.md>).\nDonations: [X (formerly Twitter)](<https://x.com/slord399/creator-subscriptions/subscribe>) | [Ko-fi](<https://ko-fi.com/tony_lewis>) | [GitHub Sponsors](<https://github.com/sponsors/slord399/>)."
     await interaction.response.send_message(msg, ephemeral=True)
