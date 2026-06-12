@@ -39,16 +39,17 @@ async def discover_boards(valkey, limiter):
         logger.info(f"Discovered {len(boards)} boards")
     return boards
 
-async def poll_board_recursive(valkey, limiter, board):
+async def poll_board_recursive(valkey, limiter, board, force=False, progress_callback=None):
     board_url = board["url"]
     page = 1
     total_indexed = 0
     logger.info(f"Starting crawl for board {board['name']}")
 
-    last_crawl = await valkey.get(f"last_board_crawl:{board['id']}")
-    if last_crawl and (time.time() - float(last_crawl)) < 3600:
-        logger.info(f"Skipping board {board['name']}, already crawled recently.")
-        return
+    if not force:
+        last_crawl = await valkey.get(f"last_board_crawl:{board['id']}")
+        if last_crawl and (time.time() - float(last_crawl)) < 3600:
+            logger.info(f"Skipping board {board['name']}, already crawled recently.")
+            return total_indexed
 
     while True:
         url = f"{board_url}?sort=new&page={page}"
@@ -165,6 +166,7 @@ async def poll_board_recursive(valkey, limiter, board):
                 "created": created_ts
             }))
             total_indexed += 1
+            if progress_callback: await progress_callback(1)
 
         has_next = False
         queries = data.get("postQueries", {})
@@ -179,6 +181,7 @@ async def poll_board_recursive(valkey, limiter, board):
 
     await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=3600)
     logger.info(f"Board {board['name']} crawl complete. Total: {total_indexed}")
+    return total_indexed
 
 def get_polling_interval(post):
     status = post.get("status", "").lower()
