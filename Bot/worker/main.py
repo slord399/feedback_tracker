@@ -90,6 +90,7 @@ class Worker:
                 if job["type"] == "index_confirm":
                     gid = job["guild_id"]; cid = job["channel_id"]
                     await archive_url(job["url"])
+                    await self.valkey.hset(f"post_indexer_info:{job['url']}", mapping={"name": job["user_name"], "icon": job.get("user_icon") or ""})
                     if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
                     lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
@@ -102,7 +103,7 @@ class Worker:
                         mode = cfg.get("mode", "global")
                         if mode == "global" and cfg.get("status_channel"):
                             await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
-                            oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Global Request", "icon": None}, lang=cfg.get("language", "English"))
+                            oemb = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job.get("user_icon")}, lang=cfg.get("language", "English"))
                             files = self.get_milestone_file(post)
                             await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid, files=files)
 
@@ -133,7 +134,9 @@ class Worker:
                             if chan:
                                 if mode == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
                                 lang = cfg.get("language") or "English"
-                                emb = create_canny_embed(post, old_status=job.get("old_status"), lang=lang)
+                                indexer = await self.valkey.hgetall(f"post_indexer_info:{job['url']}")
+                                user_info = {"type": "indexed", "name": indexer.get("name", "System Discovery"), "icon": indexer.get("icon")}
+                                emb = create_canny_embed(post, old_status=job.get("old_status"), user_info=user_info, lang=lang)
                                 files = self.get_milestone_file(post)
                                 await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
             except (redis.exceptions.TimeoutError, asyncio.TimeoutError): continue

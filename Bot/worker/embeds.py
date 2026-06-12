@@ -66,9 +66,11 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
     image_urls = post.get("imageURLs", [])
     if image_urls: embed.set_image(url=image_urls[0])
 
-    if user_info:
-        footer_key = "indexed_by" if user_info.get("type") == "indexed" else "requested_by"
-        embed.set_footer(text=loc.get(footer_key, lang, user=user_info.get("name")), icon_url=user_info.get("icon"))
+    if not user_info:
+        user_info = {"type": "indexed", "name": "System Discovery", "icon": None}
+
+    footer_key = "indexed_by" if user_info.get("type") == "indexed" else "requested_by"
+    embed.set_footer(text=loc.get(footer_key, lang, user=user_info.get("name")), icon_url=user_info.get("icon"))
 
     return embed
 

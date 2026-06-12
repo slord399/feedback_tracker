@@ -482,7 +482,8 @@ class MyBot(commands.Bot):
         lang = "English"
         if interaction.guild_id:
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
-        embed = create_canny_embed(post, lang=lang)
+        user_info = {"type": "requested", "name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)}
+        embed = create_canny_embed(post, lang=lang, user_info=user_info)
         await interaction.followup.send(embed=embed, view=create_canny_view(url))
 
     async def post_indexed_hour(self, interaction: discord.Interaction, message: discord.Message):
@@ -542,7 +543,7 @@ class MyBot(commands.Bot):
                 desc += f"{i}. **{name}**: {int(count)} milestones (25+ votes)\n"
             embed.description = desc or "No data available."
 
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=False)
 
 bot = MyBot()
 
@@ -686,6 +687,7 @@ async def bulk_add(interaction: discord.Interaction):
             if "canny.io" in u or "feedback.vrchat.com" in u:
                 await bot.valkey.sadd("indexed_post_urls", u)
                 await bot.valkey.sadd(f"guild_indexed_posts:{interaction.guild_id}", u)
+                await bot.valkey.hset(f"post_indexer_info:{u}", mapping={"name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)})
                 await bot.valkey.set(f"next_poll:{u}", 0)
                 found += 1
     await interaction.followup.send(f"Added {found} URLs.")
@@ -723,7 +725,8 @@ async def test_feed(interaction: discord.Interaction, canny_url: str):
     lang = "English"
     if interaction.guild_id:
         lang = await bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
-    embed = create_canny_embed(post, lang=lang)
+    user_info = {"type": "requested", "name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)}
+    embed = create_canny_embed(post, lang=lang, user_info=user_info)
     await interaction.followup.send(embed=embed, view=create_canny_view(url), ephemeral=True)
 
 if __name__ == "__main__":
