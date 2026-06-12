@@ -30,8 +30,17 @@ def get_valkey_client():
     )
     return _valkey_instance
 
-async def register_guild(valkey, guild_id):
-    await valkey.sadd("active_guilds", str(guild_id))
+async def register_guild(valkey, guild):
+    gid = str(guild.id) if hasattr(guild, 'id') else str(guild)
+    name = getattr(guild, 'name', "Unknown Server")
+    await valkey.sadd("active_guilds", gid)
+    if hasattr(guild, 'name'):
+        await valkey.hset("guild_names", gid, name)
 
 async def get_active_guilds(valkey):
     return await valkey.smembers("active_guilds")
+
+async def get_all_guilds(valkey):
+    gids = await valkey.smembers("active_guilds")
+    names = await valkey.hgetall("guild_names")
+    return [{"id": gid, "name": names.get(gid, "Unknown Server")} for gid in gids]

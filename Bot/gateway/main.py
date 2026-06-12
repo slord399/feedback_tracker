@@ -17,7 +17,7 @@ from discord import app_commands, ui
 from discord.ext import commands, tasks
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from Bot.shared.valkey import get_valkey_client, register_guild
+from Bot.shared.valkey import get_valkey_client, register_guild, get_all_guilds
 from Bot.shared.localization import get_localizer
 from Bot.shared.canny import fetch_canny_data, extract_post_from_data
 from Bot.worker.embeds import create_canny_embed, create_canny_view
@@ -37,7 +37,7 @@ GUILD_ONLY_CONTEXTS = app_commands.AppCommandContext(guild=True)
 
 class GuildSelect(ui.Select):
     def __init__(self, bot, guilds, canny_url, message_id=None):
-        options = [discord.SelectOption(label=g.name, value=str(g.id)) for g in guilds[:25]]
+        options = [discord.SelectOption(label=g['name'], value=str(g['id'])) for g in guilds[:25]]
         super().__init__(placeholder="Select server...", options=options)
         self.bot = bot
         self.canny_url = canny_url
@@ -186,9 +186,10 @@ class SearchView(ui.View):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
         url = await self.get_real_url(self.selected_url)
         lgid = await self.bot.valkey.get(f"last_index_selection:{interaction.user.id}")
+        all_guilds = await get_all_guilds(self.bot.valkey)
         if lgid:
             gid = int(lgid)
-            if any(str(g.id) == str(gid) for g in self.bot.guilds):
+            if any(str(g['id']) == str(gid) for g in all_guilds):
                 await self.bot.valkey.sadd("indexed_post_urls", url)
                 await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", url)
                 await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
@@ -197,10 +198,10 @@ class SearchView(ui.View):
                 target_cid = int(cfg.get("status_channel") or interaction.channel_id)
                 await self.bot.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "purge": False}))
                 return await interaction.response.send_message("Indexed!", ephemeral=True)
-        if not self.bot.guilds:
+        if not all_guilds:
             return await interaction.response.send_message("Bot is not in any servers.", ephemeral=True)
         view = ui.View()
-        view.add_item(GuildSelect(self.bot, self.bot.guilds, url))
+        view.add_item(GuildSelect(self.bot, all_guilds, url))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
 
     async def update_msg(self, interaction):
@@ -334,11 +335,18 @@ class MyBot(commands.Bot):
         self.localizer = get_localizer()
 
     async def on_guild_join(self, guild):
-        await register_guild(self.valkey, guild.id)
+        await register_guild(self.valkey, guild)
         logger.info(f"Joined new guild: {guild.name} ({guild.id})")
+
+    async def sync_guilds_to_valkey(self):
+        await self.wait_until_ready()
+        for guild in self.guilds:
+            await register_guild(self.valkey, guild)
+        logger.info(f"Synced {len(self.guilds)} guilds to Valkey.")
 
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
+        self.loop.create_task(self.sync_guilds_to_valkey())
         cmd_index = app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny)
         cmd_index.allowed_contexts = USER_APP_CONTEXTS
         cmd_index.allowed_installs = USER_APP_INSTALLS
@@ -439,9 +447,10 @@ class MyBot(commands.Bot):
         if not url:
             return await interaction.response.send_message("No URL found in message.", ephemeral=True)
         lgid = await self.valkey.get(f"last_index_selection:{interaction.user.id}")
+        all_guilds = await get_all_guilds(self.valkey)
         if lgid:
             gid = int(lgid)
-            if any(str(g.id) == str(gid) for g in self.guilds):
+            if any(str(g['id']) == str(gid) for g in all_guilds):
                 await self.valkey.sadd("indexed_post_urls", url)
                 await self.valkey.sadd(f"guild_indexed_posts:{gid}", url)
                 await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
@@ -452,10 +461,10 @@ class MyBot(commands.Bot):
                 try: await message.edit(suppress=True)
                 except: pass
                 return await interaction.response.send_message("Indexed!", ephemeral=True)
-        if not self.guilds:
+        if not all_guilds:
             return await interaction.response.send_message("Bot is not in any servers.", ephemeral=True)
         view = ui.View()
-        view.add_item(GuildSelect(self, self.guilds, url, message.id))
+        view.add_item(GuildSelect(self, all_guilds, url, message.id))
         await interaction.response.send_message("Select server:", view=view, ephemeral=True)
 
     async def check_canny_status(self, interaction: discord.Interaction, message: discord.Message):
@@ -633,7 +642,7 @@ async def metrics_cmd(interaction: discord.Interaction, category: str):
 @app_commands.checks.has_permissions(manage_messages=True)
 async def mode(interaction: discord.Interaction, mode: app_commands.Choice[str]):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "mode", mode.value)
-    await register_guild(bot.valkey, interaction.guild_id)
+    await register_guild(bot.valkey, interaction.guild)
     await interaction.response.send_message(f"Mode set to: **{mode.name}**")
 
 @bot.tree.command(name="set_status_channel", description="Set the channel for status updates")
@@ -642,7 +651,7 @@ async def mode(interaction: discord.Interaction, mode: app_commands.Choice[str])
 @app_commands.checks.has_permissions(manage_messages=True)
 async def set_status_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "status_channel", str(channel.id))
-    await register_guild(bot.valkey, interaction.guild_id)
+    await register_guild(bot.valkey, interaction.guild)
     await interaction.response.send_message("Status channel set.")
 
 @bot.tree.command(name="react_channel", description="Manage channels for auto-indexing")
@@ -657,7 +666,7 @@ async def set_status_channel(interaction: discord.Interaction, channel: discord.
 async def react_channel(interaction: discord.Interaction, action: str, channel: discord.TextChannel):
     if action == "add":
         await bot.valkey.sadd(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
-        await register_guild(bot.valkey, interaction.guild_id)
+        await register_guild(bot.valkey, interaction.guild)
         await interaction.response.send_message(f"Added <#{channel.id}> to react channels.")
     else:
         await bot.valkey.srem(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
