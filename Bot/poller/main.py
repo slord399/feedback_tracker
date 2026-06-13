@@ -172,8 +172,11 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         queries = data.get("postQueries", {})
         for q in queries.values():
             if isinstance(q, dict) and q.get("hasNextPage"):
-                has_next = True
-                break
+                # Ensure the hasNextPage actually corresponds to the board/page we are on
+                # Canny's postQueries can sometimes be confusing, but checking board name usually helps
+                if q.get("boardURLNames") == board['urlName'] or q.get("currentBoard") == board['urlName']:
+                    has_next = True
+                    break
 
         if not has_next: break
         page += 1

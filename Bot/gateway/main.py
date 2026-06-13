@@ -95,6 +95,7 @@ class MetricsSelectionView(ui.View):
         self.bot = bot
         self.category_prefix = category_prefix
         self.original_interaction = interaction
+        self.lang = lang
         loc = bot.localizer
         if category_prefix == "trending":
             self.add_item(ui.Button(label=loc.get("weekly_label", lang), style=discord.ButtonStyle.primary, custom_id="trending_week"))
@@ -103,11 +104,32 @@ class MetricsSelectionView(ui.View):
             self.add_item(ui.Button(label=loc.get("posts_label", lang), style=discord.ButtonStyle.primary, custom_id="top_authors"))
             self.add_item(ui.Button(label=loc.get("milestones_label", lang), style=discord.ButtonStyle.primary, custom_id="top_milestones"))
 
+        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close")
+        self.add_item(close_btn)
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        category = interaction.data.get("custom_id")
-        await self.bot._send_metrics(interaction, category)
+        custom_id = interaction.data.get("custom_id")
+        if custom_id == "close":
+            await interaction.response.edit_message(view=None)
+            await interaction.delete_original_response()
+            self.stop()
+            return False
+        await self.bot._send_metrics(interaction, custom_id)
         self.stop()
         return True
+
+class MetricsResultView(ui.View):
+    def __init__(self, bot, lang="English"):
+        super().__init__(timeout=60)
+        loc = bot.localizer
+        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger)
+        close_btn.callback = self.close_callback
+        self.add_item(close_btn)
+
+    async def close_callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(view=None)
+        await interaction.delete_original_response()
+        self.stop()
 
 class SearchView(ui.View):
     def __init__(self, results, page=0, bot=None, ephemeral=True, lang="English"):
@@ -240,9 +262,25 @@ class SearchFilterView(ui.View):
         board_select = ui.Select(placeholder=loc.get("select_boards", self.lang), min_values=0, max_values=5, options=[
             discord.SelectOption(label=loc.get("feature requests", self.lang), value="feature-requests"),
             discord.SelectOption(label=loc.get("bug reports", self.lang), value="bug-reports"),
+            discord.SelectOption(label=loc.get("open beta", self.lang), value="open-beta"),
+            discord.SelectOption(label=loc.get("android", self.lang), value="android"),
+            discord.SelectOption(label=loc.get("ios", self.lang), value="ios-mobile-beta"),
+            discord.SelectOption(label=loc.get("world/udon bugs & feature requests", self.lang), value="udon"),
+            discord.SelectOption(label=loc.get("avatar bugs & feature requests", self.lang), value="avatar-30"),
+            discord.SelectOption(label=loc.get("creator companion", self.lang), value="creator-companion"),
             discord.SelectOption(label=loc.get("sdk bug & feature requests", self.lang), value="sdk-bug-reports"),
-            discord.SelectOption(label=loc.get("udon", self.lang), value="udon"),
-            discord.SelectOption(label=loc.get("open beta", self.lang), value="open-beta")
+            discord.SelectOption(label=loc.get("vrchat ik", self.lang), value="vrchat-ik-20"),
+            discord.SelectOption(label=loc.get("website", self.lang), value="website"),
+            discord.SelectOption(label=loc.get("localization", self.lang), value="localization"),
+            discord.SelectOption(label=loc.get("impostors", self.lang), value="impostors"),
+            discord.SelectOption(label=loc.get("persistence", self.lang), value="persistence"),
+            discord.SelectOption(label=loc.get("creator economy", self.lang), value="creator-economy"),
+            discord.SelectOption(label=loc.get("age verification feedback", self.lang), value="age-verification"),
+            discord.SelectOption(label=loc.get("avatar marketplace", self.lang), value="avatar-marketplace"),
+            discord.SelectOption(label=loc.get("merch ideas", self.lang), value="merch"),
+            discord.SelectOption(label=loc.get("vrchat+ feature ideas", self.lang), value="vrchat-plus-feature-ideas"),
+            discord.SelectOption(label=loc.get("example central", self.lang), value="example-central"),
+            discord.SelectOption(label=loc.get("third-person view", self.lang), value="third-person-view")
         ])
         board_select.callback = self.select_boards_callback
         self.add_item(board_select)
@@ -533,6 +571,10 @@ class MyBot(commands.Bot):
 
     async def _send_metrics(self, interaction: discord.Interaction, category: str):
         await interaction.response.defer(ephemeral=False)
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+
         embed = discord.Embed(title=f"Metrics: {category.replace('_', ' ').title()}", color=discord.Color.gold())
 
         if category == "trending_week":
@@ -559,16 +601,17 @@ class MyBot(commands.Bot):
             for i, (aid, count) in enumerate(data, 1):
                 name = await self.valkey.hget("metrics:author_names", aid) or aid
                 desc += f"{i}. **{name}**: {int(count)} posts\n"
-            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
+            embed.description = desc or self.localizer.get("no_data_available", lang)
         elif category == "top_milestones":
             data = await self.valkey.zrevrange("metrics:author_milestones", 0, 19, withscores=True)
             desc = ""
             for i, (aid, count) in enumerate(data, 1):
                 name = await self.valkey.hget("metrics:author_names", aid) or aid
                 desc += f"{i}. **{name}**: {int(count)} milestones (25+ votes)\n"
-            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
+            embed.description = desc or self.localizer.get("no_data_available", lang)
 
-        await interaction.followup.send(embed=embed, ephemeral=False)
+        view = MetricsResultView(self, lang=lang)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=False)
 
     async def force_polling(self, interaction: discord.Interaction):
         if interaction.guild_id != 590756888254349315:
