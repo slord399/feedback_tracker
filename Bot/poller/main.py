@@ -47,18 +47,22 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
 
     if not force:
         last_crawl = await valkey.get(f"last_board_crawl:{board['id']}")
-        if last_crawl and (time.time() - float(last_crawl)) < 3600:
+        if last_crawl and (time.time() - float(last_crawl)) < 600:
             logger.info(f"Skipping board {board['name']}, already crawled recently.")
             return total_indexed
 
     while True:
         url = f"{board_url}?sort=new&page={page}"
+        if page > 1:
+            url = f"{board_url}?sort=new&batchSize=100&page={page}"
         await limiter.acquire()
         data = await fetch_canny_data(url)
         if not data: break
 
         posts = extract_board_posts(data)
-        if not posts: break
+        if not posts:
+            logger.warning(f"No posts found on page {page} for board {board['name']}")
+            break
 
         for p in posts:
             uname = p.get("postURLName")
@@ -89,6 +93,14 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
             pid = full_post.get("_id")
             if pid:
                 old_json = await valkey.get(f"post_cache:{pid}")
+
+                # Verify if this post was already processed in THIS crawl to avoid Canny's loop
+                if await valkey.exists(f"crawl_seen:{board['id']}:{pid}"):
+                    logger.info(f"Post {uname} already seen in this crawl, stopping board {board['name']}")
+                    has_next = False
+                    break
+                await valkey.set(f"crawl_seen:{board['id']}:{pid}", "1", ex=300)
+
                 author = full_post.get("author", {})
                 author_id = author.get("_id")
                 if author_id:
@@ -172,17 +184,17 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         queries = data.get("postQueries", {})
         for q in queries.values():
             if isinstance(q, dict) and q.get("hasNextPage"):
-                # Ensure the hasNextPage actually corresponds to the board/page we are on
-                # Canny's postQueries can sometimes be confusing, but checking board name usually helps
-                if q.get("boardURLNames") == board['urlName'] or q.get("currentBoard") == board['urlName']:
-                    has_next = True
-                    break
+                has_next = True
+                break
 
         if not has_next: break
         page += 1
         if page > 5000: break
 
-    await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=3600)
+    await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=600)
+    # Clean up crawl_seen
+    async for key in valkey.scan_iter(f"crawl_seen:{board['id']}:*"):
+        await valkey.delete(key)
     logger.info(f"Board {board['name']} crawl complete. Total: {total_indexed}")
     return total_indexed
 
