@@ -110,8 +110,8 @@ class MetricsSelectionView(ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         custom_id = interaction.data.get("custom_id")
         if custom_id == "close":
-            await interaction.response.edit_message(view=None)
-            await interaction.delete_original_response()
+            try: await interaction.message.delete()
+            except: pass
             self.stop()
             return False
         await self.bot._send_metrics(interaction, custom_id)
@@ -127,8 +127,8 @@ class MetricsResultView(ui.View):
         self.add_item(close_btn)
 
     async def close_callback(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(view=None)
-        await interaction.delete_original_response()
+        try: await interaction.message.delete()
+        except: pass
         self.stop()
 
 class SearchView(ui.View):
@@ -575,7 +575,8 @@ class MyBot(commands.Bot):
         if interaction.guild_id:
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
 
-        embed = discord.Embed(title=f"Metrics: {category.replace('_', ' ').title()}", color=discord.Color.gold())
+        title = self.localizer.get(f"metrics_title_{category}", lang)
+        embed = discord.Embed(title=title, color=discord.Color.gold())
 
         if category == "trending_week":
             key = f"metrics:trending:week:{datetime.now().strftime('%Y-%W')}"

@@ -94,11 +94,17 @@ def extract_board_posts(data):
         return []
     post_queries = data.get("postQueries", {})
     all_posts = []
+    seen_ids = set()
     for query_key, query_data in post_queries.items():
         if isinstance(query_data, dict):
             posts_list = query_data.get("posts", [])
             for p in posts_list:
-                all_posts.append(p)
+                # We need to distinguish posts properly.
+                # Canny sometimes returns just references.
+                pid = p.get("_id") or p.get("postURLName")
+                if pid and pid not in seen_ids:
+                    all_posts.append(p)
+                    seen_ids.add(pid)
     return all_posts
 
 async def archive_url(url: str):
