@@ -52,9 +52,9 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
             return total_indexed
 
     while True:
-        url = f"{board_url}?sort=new&page={page}"
-        if page > 1:
-            url = f"{board_url}?sort=new&batchSize=100&page={page}"
+        # Use batchSize=100 to maximize discovery, but Canny's SPA structure
+        # often ignores page parameters on initial HTML fetch.
+        url = f"{board_url}?sort=new&batchSize=100&page={page}"
         await limiter.acquire()
         data = await fetch_canny_data(url)
         if not data: break
