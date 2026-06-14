@@ -31,6 +31,9 @@ async def fetch_canny_data(url: str, retry_fallback=True):
                         return await fetch_canny_data(fallback_url, retry_fallback=False)
 
             if response.status != 200:
+                if response.status == 429:
+                    logger.warning(f"Rate limited (429) fetching {url}")
+                    return {"error": "rate_limit"}
                 if response.status == 404:
                     logger.info(f"Failed to fetch {url}, status: 404")
                 else:
