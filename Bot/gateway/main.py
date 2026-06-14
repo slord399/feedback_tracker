@@ -91,7 +91,7 @@ class LanguageSelect(ui.Select):
 
 class MetricsSelectionView(ui.View):
     def __init__(self, bot, category_prefix, interaction, lang="English"):
-        super().__init__(timeout=60)
+        super().__init__(timeout=None)
         self.bot = bot
         self.category_prefix = category_prefix
         self.original_interaction = interaction
@@ -114,15 +114,18 @@ class MetricsSelectionView(ui.View):
                 await interaction.response.defer()
                 await interaction.message.delete()
             except: pass
-            self.stop()
+            # We don't call self.stop() here so the view doesn't become "dead" for other messages
             return False
-        await self.bot._send_metrics(interaction, custom_id)
-        # Removed self.stop() to allow subsequent interactions like Close button
+
+        # Ack the interaction to prevent "Interaction failed" errors
+        try: await interaction.response.defer()
+        except: pass
+        await self.bot._send_metrics(interaction, custom_id, deferred=True)
         return True
 
 class MetricsResultView(ui.View):
     def __init__(self, bot, lang="English"):
-        super().__init__(timeout=60)
+        super().__init__(timeout=None)
         loc = bot.localizer
         close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger)
         close_btn.callback = self.close_callback
@@ -573,8 +576,9 @@ class MyBot(commands.Bot):
         msg = self.localizer.get("select_metric_msg", lang)
         await interaction.response.send_message(msg, view=MetricsSelectionView(self, "authors", interaction, lang=lang), ephemeral=False)
 
-    async def _send_metrics(self, interaction: discord.Interaction, category: str):
-        await interaction.response.defer(ephemeral=False)
+    async def _send_metrics(self, interaction: discord.Interaction, category: str, deferred: bool = False):
+        if not deferred:
+            await interaction.response.defer(ephemeral=False)
         lang = "English"
         if interaction.guild_id:
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
@@ -590,7 +594,7 @@ class MyBot(commands.Bot):
                 p_raw = await self.valkey.hget("canny_search_index", uname)
                 title = json.loads(p_raw).get('title', uname) if p_raw else uname
                 desc += f"{i}. **{title}** (+{int(score)} activity)\n"
-            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
+            embed.description = desc or self.localizer.get("no_data_available", lang)
         elif category == "trending_month":
             key = f"metrics:trending:month:{datetime.now().strftime('%Y-%m')}"
             data = await self.valkey.zrevrange(key, 0, 19, withscores=True)
@@ -599,7 +603,7 @@ class MyBot(commands.Bot):
                 p_raw = await self.valkey.hget("canny_search_index", uname)
                 title = json.loads(p_raw).get('title', uname) if p_raw else uname
                 desc += f"{i}. **{title}** (+{int(score)} activity)\n"
-            embed.description = desc or self.bot.localizer.get("no_data_available", lang)
+            embed.description = desc or self.localizer.get("no_data_available", lang)
         elif category == "top_authors":
             data = await self.valkey.zrevrange("metrics:author_posts", 0, 19, withscores=True)
             desc = ""
@@ -715,7 +719,8 @@ async def stats(interaction: discord.Interaction):
     board_str = ""
     if board_stats:
         board_str = "\n\n**Discovered Posts by Board:**\n"
-        for b, count in board_stats.items():
+        sorted_boards = sorted(board_stats.items(), key=lambda x: int(x[1]), reverse=True)
+        for b, count in sorted_boards:
             board_str += f"- {b}: {count}\n"
 
     msg = f"**Canny Bot Stats**\nDiscovered Posts: {tot}\nTracked Posts: {idx}\nActive Polling Queue: {polled}\n\n**Activity ({this_month})**\nStatus Updates: {status_changes}\nVote Milestones: {vote_reports}{board_str}"

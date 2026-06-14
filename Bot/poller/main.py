@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poller")
 
 async def discover_boards(valkey, limiter):
-    logger.info("Discovering boards...")
+    logger.debug("Discovering boards...")
     await limiter.acquire()
     data = await fetch_canny_data("https://feedback.vrchat.com/")
     if not data:
@@ -36,14 +36,14 @@ async def discover_boards(valkey, limiter):
         boards.append({"id": v.get("_id"), "name": v.get("name"), "urlName": v.get("urlName"), "url": f"https://feedback.vrchat.com/{v.get('urlName')}"})
     if boards:
         await valkey.set("canny_boards", json.dumps(boards))
-        logger.info(f"Discovered {len(boards)} boards")
+        logger.debug(f"Discovered {len(boards)} boards")
     return boards
 
 async def poll_board_recursive(valkey, limiter, board, force=False, progress_callback=None):
     board_url = board["url"]
     page = 1
     total_indexed = 0
-    logger.info(f"Starting crawl for board {board['name']}")
+    logger.debug(f"Starting crawl for board {board['name']}")
 
     if not force:
         last_crawl = await valkey.get(f"last_board_crawl:{board['id']}")
@@ -97,7 +97,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
 
                 # Verify if this post was already processed in THIS crawl to avoid Canny's loop
                 if await valkey.exists(f"crawl_seen:{board['id']}:{pid}"):
-                    logger.info(f"Post {uname} already seen in this crawl, stopping board {board['name']}")
+                    logger.debug(f"Post {uname} already seen in this crawl, stopping board {board['name']}")
                     has_next = False
                     break
                 await valkey.set(f"crawl_seen:{board['id']}:{pid}", "1", ex=300)
@@ -205,7 +205,8 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
     # Clean up crawl_seen
     async for key in valkey.scan_iter(f"crawl_seen:{board['id']}:*"):
         await valkey.delete(key)
-    logger.info(f"Board {board['name']} crawl complete. Total: {total_indexed}")
+    if total_indexed > 0:
+        logger.info(f"Board {board['name']} crawl complete. Total: {total_indexed}")
     return total_indexed
 
 def get_polling_interval(post):
