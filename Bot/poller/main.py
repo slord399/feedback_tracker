@@ -27,6 +27,10 @@ async def discover_boards(valkey, limiter):
     logger.debug("Discovering boards...")
     await limiter.acquire()
     data = await fetch_canny_data("https://feedback.vrchat.com/")
+    if isinstance(data, dict) and data.get("error") == "rate_limit":
+        logger.warning("Rate limited during board discovery. Sleeping for 30 minutes.")
+        await asyncio.sleep(1800)
+        return []
     if not data:
         logger.error("Failed to fetch boards data")
         return []
@@ -57,6 +61,10 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         url = f"{board_url}?sort=new&batchSize=100&page={page}"
         await limiter.acquire()
         data = await fetch_canny_data(url)
+        if isinstance(data, dict) and data.get("error") == "rate_limit":
+            logger.warning(f"Rate limited during board crawl for {board['name']}. Sleeping for 30 minutes.")
+            await asyncio.sleep(1800)
+            continue
         if not data: break
 
         posts = extract_board_posts(data)
@@ -236,6 +244,8 @@ def get_polling_interval(post):
 async def poll_post(valkey, limiter, url, url_name):
     await limiter.acquire()
     data = await fetch_canny_data(url)
+    if isinstance(data, dict) and data.get("error") == "rate_limit":
+        return "rate_limit"
     post = extract_post_from_data(data, url_name)
     if not post: return None
     pid = post.get("_id")
@@ -326,6 +336,10 @@ async def poller_loop():
             for b in boards:
                 await limiter.acquire()
                 data = await fetch_canny_data(f"{b['url']}?sort=new")
+                if isinstance(data, dict) and data.get("error") == "rate_limit":
+                    logger.warning("Rate limited during poller loop board refresh. Sleeping for 30 minutes.")
+                    await asyncio.sleep(1800)
+                    continue
                 posts = extract_board_posts(data)
                 for p in posts:
                     uname = p.get("postURLName")
@@ -335,6 +349,10 @@ async def poller_loop():
                         break
                     await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
                     full_p = await poll_post(valkey, limiter, p_url, uname)
+                    if full_p == "rate_limit":
+                        logger.warning(f"Rate limited polling {p_url}. Sleeping for 30 minutes.")
+                        await asyncio.sleep(1800)
+                        break
                     if full_p:
                         await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_p))
                         await valkey.incr("stats:polling_queue_size")
@@ -347,6 +365,10 @@ async def poller_loop():
                     if "p" in parts:
                         name = parts[parts.index("p") + 1]
                         p = await poll_post(valkey, limiter, url, name)
+                        if p == "rate_limit":
+                            logger.warning(f"Rate limited polling {url}. Sleeping for 30 minutes.")
+                            await asyncio.sleep(1800)
+                            continue
                         if p: await valkey.set(key, time.time() + get_polling_interval(p))
                         else:
                             fail_count = await valkey.incr(f"poll_fail_count:{url}")

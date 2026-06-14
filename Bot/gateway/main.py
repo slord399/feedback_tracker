@@ -636,30 +636,39 @@ class MyBot(commands.Bot):
         self.loop.create_task(self.do_force_polling(interaction, lang))
 
     async def do_force_polling(self, interaction, lang):
-        valkey = self.valkey
-        limiter = get_global_limiter(valkey)
-        boards = await discover_boards(valkey, limiter)
-
-        discovered_count = 0
-        board_results = {}
-
-        async def progress_callback(n):
-            nonlocal discovered_count
-            discovered_count += n
-            if discovered_count % 1000 == 0:
-                msg = self.localizer.get("polling_progress", lang, count=discovered_count)
-                try: await interaction.channel.send(msg)
+        try:
+            valkey = self.valkey
+            limiter = get_global_limiter(valkey)
+            boards = await discover_boards(valkey, limiter)
+            if not boards:
+                try: await interaction.channel.send("No boards discovered to poll.")
                 except: pass
+                return
 
-        for b in boards:
-            count = await poll_board_recursive(valkey, limiter, b, force=True, progress_callback=progress_callback)
-            board_results[b['name']] = count
+            discovered_count = 0
+            board_results = {}
 
-        summary = self.localizer.get("polling_complete", lang) + "\n"
-        for name, count in board_results.items():
-            summary += f"- **{name}**: {count}\n"
-        try: await interaction.channel.send(summary)
-        except: pass
+            async def progress_callback(n):
+                nonlocal discovered_count
+                discovered_count += n
+                if discovered_count % 10000 == 0:
+                    msg = self.localizer.get("polling_progress", lang, count=f"{discovered_count:,}")
+                    try: await interaction.channel.send(msg)
+                    except: pass
+
+            for b in boards:
+                count = await poll_board_recursive(valkey, limiter, b, force=True, progress_callback=progress_callback)
+                board_results[b['name']] = count
+
+            summary = self.localizer.get("polling_complete", lang) + "\n"
+            for name, count in board_results.items():
+                summary += f"- **{name}**: {int(count):,}\n"
+            try: await interaction.channel.send(summary)
+            except: pass
+        except Exception:
+            logger.exception("Error in do_force_polling")
+            try: await interaction.channel.send("An error occurred during force polling. Check logs for details.")
+            except: pass
 
 bot = MyBot()
 
@@ -709,21 +718,23 @@ async def ping(interaction: discord.Interaction):
 async def stats(interaction: discord.Interaction):
     await interaction.response.defer()
     idx = await bot.valkey.scard("indexed_post_urls")
-    tot = await bot.valkey.hlen("canny_search_index")
     polled = await bot.valkey.get("stats:polling_queue_size") or 0
     this_month = time.strftime('%Y-%m')
     status_changes = await bot.valkey.get(f"stats:status_change:{this_month}") or 0
     vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0
 
     board_stats = await bot.valkey.hgetall("stats:board_posts")
+    tot = 0
     board_str = ""
     if board_stats:
         board_str = "\n\n**Discovered Posts by Board:**\n"
         sorted_boards = sorted(board_stats.items(), key=lambda x: int(x[1]), reverse=True)
         for b, count in sorted_boards:
-            board_str += f"- {b}: {count}\n"
+            c = int(count)
+            tot += c
+            board_str += f"- {b}: {c:,}\n"
 
-    msg = f"**Canny Bot Stats**\nDiscovered Posts: {tot}\nTracked Posts: {idx}\nActive Polling Queue: {polled}\n\n**Activity ({this_month})**\nStatus Updates: {status_changes}\nVote Milestones: {vote_reports}{board_str}"
+    msg = f"**Canny Bot Stats**\nDiscovered Posts: {tot:,}\nTracked Posts: {idx:,}\nActive Polling Queue: {int(polled):,}\n\n**Activity ({this_month})**\nStatus Updates: {int(status_changes):,}\nVote Milestones: {int(vote_reports):,}{board_str}"
     await interaction.followup.send(msg)
 
 @bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")
