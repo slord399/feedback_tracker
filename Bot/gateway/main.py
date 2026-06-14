@@ -110,12 +110,14 @@ class MetricsSelectionView(ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         custom_id = interaction.data.get("custom_id")
         if custom_id == "close":
-            try: await interaction.message.delete()
+            try:
+                await interaction.response.defer()
+                await interaction.message.delete()
             except: pass
             self.stop()
             return False
         await self.bot._send_metrics(interaction, custom_id)
-        self.stop()
+        # Removed self.stop() to allow subsequent interactions like Close button
         return True
 
 class MetricsResultView(ui.View):
@@ -127,7 +129,9 @@ class MetricsResultView(ui.View):
         self.add_item(close_btn)
 
     async def close_callback(self, interaction: discord.Interaction):
-        try: await interaction.message.delete()
+        try:
+            await interaction.response.defer()
+            await interaction.message.delete()
         except: pass
         self.stop()
 
@@ -706,7 +710,15 @@ async def stats(interaction: discord.Interaction):
     this_month = time.strftime('%Y-%m')
     status_changes = await bot.valkey.get(f"stats:status_change:{this_month}") or 0
     vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0
-    msg = f"**Canny Bot Stats**\nDiscovered Posts: {tot}\nTracked Posts: {idx}\nActive Polling Queue: {polled}\n\n**Activity ({this_month})**\nStatus Updates: {status_changes}\nVote Milestones: {vote_reports}"
+
+    board_stats = await bot.valkey.hgetall("stats:board_posts")
+    board_str = ""
+    if board_stats:
+        board_str = "\n\n**Discovered Posts by Board:**\n"
+        for b, count in board_stats.items():
+            board_str += f"- {b}: {count}\n"
+
+    msg = f"**Canny Bot Stats**\nDiscovered Posts: {tot}\nTracked Posts: {idx}\nActive Polling Queue: {polled}\n\n**Activity ({this_month})**\nStatus Updates: {status_changes}\nVote Milestones: {vote_reports}{board_str}"
     await interaction.followup.send(msg)
 
 @bot.tree.command(name="help", description="Comprehensive guide for the VRChat Canny Bot")

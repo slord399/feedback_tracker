@@ -61,7 +61,8 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
 
         posts = extract_board_posts(data)
         if not posts:
-            logger.warning(f"No posts found on page {page} for board {board['name']}")
+            if page == 1:
+                logger.warning(f"No posts found on page {page} for board {board['name']}")
             break
 
         for p in posts:
@@ -167,6 +168,9 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                     await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_post))
                     await valkey.incr("stats:polling_queue_size")
 
+            # Check if this is a newly discovered post (not in search index)
+            is_new = not await valkey.hexists("canny_search_index", uname)
+
             await valkey.hset("canny_search_index", uname, json.dumps({
                 "title": title,
                 "details": details,
@@ -177,7 +181,13 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                 "board": board["name"],
                 "created": created_ts
             }))
+
+            if is_new:
+                await valkey.hincrby("stats:board_posts", board["name"], 1)
+
             total_indexed += 1
+            if total_indexed % 100 == 0:
+                logger.info(f"Board {board['name']} progress: {total_indexed} posts discovered...")
             if progress_callback: await progress_callback(1)
 
         has_next = False
