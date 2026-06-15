@@ -53,7 +53,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
 
     if not force:
         last_crawl = await valkey.get(f"last_board_crawl:{board['id']}")
-        if last_crawl and (time.time() - float(last_crawl)) < 600:
+        if last_crawl and (time.time() - float(last_crawl)) < 10800:
             logger.info(f"Skipping board {board['name']}, already crawled recently.")
             return total_indexed
 
@@ -219,7 +219,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         page += 1
         if page > 5000: break
 
-    await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=600)
+    await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=10800)
     await valkey.hset("stats:board_posts", board["name"], total_indexed)
     # Clean up crawl_seen
     async for key in valkey.scan_iter(f"crawl_seen:{board['id']}:*"):
@@ -345,7 +345,7 @@ async def poller_loop():
     valkey = get_valkey_client(); limiter = get_global_limiter(valkey)
     boards = await discover_boards(valkey, limiter)
     for b in boards:
-        asyncio.create_task(poll_board_recursive(valkey, limiter, b))
+        asyncio.create_task(poll_board_recursive(valkey, limiter, b, force=True))
 
     while True:
         try:
