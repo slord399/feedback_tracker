@@ -27,10 +27,11 @@ async def discover_boards(valkey, limiter):
     logger.debug("Discovering boards...")
     await limiter.acquire()
     data = await fetch_canny_data("https://feedback.vrchat.com/")
-    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
         err = data.get("error")
-        logger.warning(f"{err.replace('_', ' ').capitalize()} during board discovery. Sleeping for 30 minutes.")
-        await asyncio.sleep(1800)
+        wait = 10800 if err == "timeout" else 1800
+        logger.warning(f"{err.replace('_', ' ').capitalize()} during board discovery. Sleeping for {wait//60} minutes.")
+        await asyncio.sleep(wait)
         return []
     if not data:
         logger.error("Failed to fetch boards data")
@@ -52,7 +53,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
 
     if not force:
         last_crawl = await valkey.get(f"last_board_crawl:{board['id']}")
-        if last_crawl and (time.time() - float(last_crawl)) < 600:
+        if last_crawl and (time.time() - float(last_crawl)) < 10800:
             logger.info(f"Skipping board {board['name']}, already crawled recently.")
             return total_indexed
 
@@ -62,10 +63,11 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         url = f"{board_url}?sort=new&batchSize=100&page={page}"
         await limiter.acquire()
         data = await fetch_canny_data(url)
-        if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+        if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
             err = data.get("error")
-            logger.warning(f"{err.replace('_', ' ').capitalize()} during board crawl for {board['name']}. Sleeping for 30 minutes.")
-            await asyncio.sleep(1800)
+            wait = 10800 if err == "timeout" else 1800
+            logger.warning(f"{err.replace('_', ' ').capitalize()} during board crawl for {board['name']}. Sleeping for {wait//60} minutes.")
+            await asyncio.sleep(wait)
             continue
         if not data: break
 
@@ -217,7 +219,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         page += 1
         if page > 5000: break
 
-    await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=600)
+    await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=10800)
     await valkey.hset("stats:board_posts", board["name"], total_indexed)
     # Clean up crawl_seen
     async for key in valkey.scan_iter(f"crawl_seen:{board['id']}:*"):
@@ -253,7 +255,7 @@ def get_polling_interval(post):
 async def poll_post(valkey, limiter, url, url_name):
     await limiter.acquire()
     data = await fetch_canny_data(url)
-    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
         return data.get("error")
     post = extract_post_from_data(data, url_name)
     if not post: return None
@@ -343,7 +345,7 @@ async def poller_loop():
     valkey = get_valkey_client(); limiter = get_global_limiter(valkey)
     boards = await discover_boards(valkey, limiter)
     for b in boards:
-        asyncio.create_task(poll_board_recursive(valkey, limiter, b))
+        asyncio.create_task(poll_board_recursive(valkey, limiter, b, force=True))
 
     while True:
         try:
@@ -351,10 +353,11 @@ async def poller_loop():
             for b in boards:
                 await limiter.acquire()
                 data = await fetch_canny_data(f"{b['url']}?sort=new")
-                if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+                if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                     err = data.get("error")
-                    logger.warning(f"{err.replace('_', ' ').capitalize()} during poller loop board refresh. Sleeping for 30 minutes.")
-                    await asyncio.sleep(1800)
+                    wait = 10800 if err == "timeout" else 1800
+                    logger.warning(f"{err.replace('_', ' ').capitalize()} during poller loop board refresh. Sleeping for {wait//60} minutes.")
+                    await asyncio.sleep(wait)
                     continue
                 posts = extract_board_posts(data)
                 for p in posts:
@@ -365,9 +368,10 @@ async def poller_loop():
                         break
                     await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
                     full_p = await poll_post(valkey, limiter, p_url, uname)
-                    if full_p in ["rate_limit", "server_error"]:
-                        logger.warning(f"{full_p.replace('_', ' ').capitalize()} polling {p_url}. Sleeping for 30 minutes.")
-                        await asyncio.sleep(1800)
+                    if full_p in ["rate_limit", "server_error", "timeout"]:
+                        wait = 10800 if full_p == "timeout" else 1800
+                        logger.warning(f"{full_p.replace('_', ' ').capitalize()} polling {p_url}. Sleeping for {wait//60} minutes.")
+                        await asyncio.sleep(wait)
                         break
                     if full_p:
                         await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(full_p))
@@ -381,9 +385,10 @@ async def poller_loop():
                     if "p" in parts:
                         name = parts[parts.index("p") + 1]
                         p = await poll_post(valkey, limiter, url, name)
-                        if p in ["rate_limit", "server_error"]:
-                            logger.warning(f"{p.replace('_', ' ').capitalize()} polling {url}. Sleeping for 30 minutes.")
-                            await asyncio.sleep(1800)
+                        if p in ["rate_limit", "server_error", "timeout"]:
+                            wait = 10800 if p == "timeout" else 1800
+                            logger.warning(f"{p.replace('_', ' ').capitalize()} polling {url}. Sleeping for {wait//60} minutes.")
+                            await asyncio.sleep(wait)
                             continue
                         if p: await valkey.set(key, time.time() + get_polling_interval(p))
                         else:
