@@ -81,10 +81,11 @@ class Worker:
                 else:
                     await self.global_limiter.acquire()
                     data = await fetch_canny_data(job["url"])
-                    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+                    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                         err = data.get("error")
-                        logger.warning(f"Worker encountered {err.replace('_', ' ').capitalize()} for {job['url']}. Sleeping for 30 minutes.")
-                        await asyncio.sleep(1800)
+                        wait = 10800 if err == "timeout" else 1800
+                        logger.warning(f"Worker encountered {err.replace('_', ' ').capitalize()} for {job['url']}. Sleeping for {wait//60} minutes.")
+                        await asyncio.sleep(wait)
                         await self.valkey.lpush(res[0], json.dumps(job)) # Put it back
                         continue
                     parts = job["url"].split("/")

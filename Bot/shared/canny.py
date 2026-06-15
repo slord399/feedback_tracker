@@ -61,6 +61,9 @@ async def fetch_canny_data(url: str, retry_fallback=True):
                                 return json.loads(data_str)
                         except Exception as e:
                             logger.info(f"Error parsing {var_name} in {url}: {e}")
+    except (asyncio.TimeoutError, aiohttp.ClientConnectorError) as e:
+        logger.warning(f"Timeout/Connection error fetching {url}: {e}")
+        return {"error": "timeout"}
     except Exception as e:
         logger.info(f"Fetch error {url}: {e}")
     return None
