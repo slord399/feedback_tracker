@@ -81,6 +81,12 @@ class Worker:
                 else:
                     await self.global_limiter.acquire()
                     data = await fetch_canny_data(job["url"])
+                    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+                        err = data.get("error")
+                        logger.warning(f"Worker encountered {err.replace('_', ' ').capitalize()} for {job['url']}. Sleeping for 30 minutes.")
+                        await asyncio.sleep(1800)
+                        await self.valkey.lpush(res[0], json.dumps(job)) # Put it back
+                        continue
                     parts = job["url"].split("/")
                     uname = parts[parts.index("p") + 1] if "p" in parts else None
                     post = extract_post_from_data(data, uname)
@@ -90,22 +96,33 @@ class Worker:
                 if job["type"] == "index_confirm":
                     gid = job["guild_id"]; cid = job["channel_id"]
                     await archive_url(job["url"])
-                    await self.valkey.hset(f"post_indexer_info:{job['url']}", mapping={"name": job["user_name"], "icon": job.get("user_icon") or ""})
+
+                    is_already_indexed = await self.valkey.sismember("indexed_post_urls", job["url"])
+
+                    if not is_already_indexed:
+                        await self.valkey.sadd("indexed_post_urls", job["url"])
+                        await self.valkey.hset(f"post_indexer_info:{job['url']}", mapping={"name": job["user_name"], "icon": job.get("user_icon") or "", "guild_id": str(gid)})
+
+                    await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
+
+                    user_type = "requested" if is_already_indexed else "indexed"
+
                     if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
                     lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
-                    embed = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
+                    embed = create_canny_embed(post, user_info={"type": user_type, "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
                     files = self.get_milestone_file(post)
                     await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
 
-                    for oid in await get_active_guilds(self.valkey):
-                        if str(oid) == str(gid): continue
-                        cfg = await self.valkey.hgetall(f"guild_config:{oid}")
-                        mode = cfg.get("mode", "global")
-                        if mode == "global" and cfg.get("status_channel"):
-                            await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
-                            oemb = create_canny_embed(post, user_info={"type": "indexed", "name": job["user_name"], "icon": job.get("user_icon")}, lang=cfg.get("language", "English"))
-                            files = self.get_milestone_file(post)
-                            await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid, files=files)
+                    if not is_already_indexed:
+                        for oid in await get_active_guilds(self.valkey):
+                            if str(oid) == str(gid): continue
+                            cfg = await self.valkey.hgetall(f"guild_config:{oid}")
+                            mode = cfg.get("mode", "global")
+                            if mode == "global" and cfg.get("status_channel"):
+                                await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
+                                oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Indexed by Global Mode", "icon": None}, lang=cfg.get("language", "English"))
+                                files = self.get_milestone_file(post)
+                                await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid, files=files)
 
                 elif job["type"] == "check_status":
                     gid = job.get("guild_id")
@@ -117,6 +134,15 @@ class Worker:
 
                 elif job["type"] in ["status_change", "vote_progress"]:
                     await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
+
+                    is_truly_indexed = await self.valkey.sismember("indexed_post_urls", job["url"])
+                    if not is_truly_indexed:
+                        # Skip unless it reached 25 votes and was auto-added (handled in poller)
+                        continue
+
+                    indexer = await self.valkey.hgetall(f"post_indexer_info:{job['url']}")
+                    orig_gid = indexer.get("guild_id")
+
                     for gid in await get_active_guilds(self.valkey):
                         cfg = await self.valkey.hgetall(f"guild_config:{gid}")
                         mode = cfg.get("mode", "global")
@@ -134,8 +160,14 @@ class Worker:
                             if chan:
                                 if mode == "global": await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
                                 lang = cfg.get("language") or "English"
-                                indexer = await self.valkey.hgetall(f"post_indexer_info:{job['url']}")
-                                user_info = {"type": "indexed", "name": indexer.get("name", "System Discovery"), "icon": indexer.get("icon")}
+
+                                u_name = indexer.get("name", "System Discovery")
+                                u_icon = indexer.get("icon")
+                                if str(gid) != orig_gid and u_name != "System Discovery":
+                                    u_name = "Indexed by Global Mode"
+                                    u_icon = None
+
+                                user_info = {"type": "indexed", "name": u_name, "icon": u_icon}
                                 emb = create_canny_embed(post, old_status=job.get("old_status"), user_info=user_info, lang=lang)
                                 files = self.get_milestone_file(post)
                                 await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
