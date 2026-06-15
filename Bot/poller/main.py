@@ -137,6 +137,10 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                         if last_notified_status != status:
                             await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": full_post, "old_status": old.get("status"), "url": p_url}))
                             await valkey.set(f"notified_status:{pid}", status)
+                            if not await valkey.sismember("indexed_post_urls", p_url):
+                                await valkey.sadd("indexed_post_urls", p_url)
+                                if not await valkey.exists(f"post_indexer_info:{p_url}"):
+                                    await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                             if author_id and status.lower() in ["complete", "completed", "available in future release"]:
                                 await valkey.zincrby("metrics:author_milestones", 1, author_id)
 
@@ -146,6 +150,10 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                     if current_milestone > last_milestone:
                         await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
                         await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
+                        if not await valkey.sismember("indexed_post_urls", p_url):
+                            await valkey.sadd("indexed_post_urls", p_url)
+                            if not await valkey.exists(f"post_indexer_info:{p_url}"):
+                                await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                         if author_id:
                             milestone_delta = current_milestone - last_milestone
                             await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
@@ -168,7 +176,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                     await valkey.set(f"notified_status:{pid}", status)
                     await valkey.set(f"notified_milestone:{pid}", str(score // 25))
 
-                    if score >= 25 or status.lower() in ["complete", "completed", "available in future release"]:
+                    if score >= 25 or status.lower() != "open":
                         if not await valkey.sismember("indexed_post_urls", p_url):
                             await valkey.sadd("indexed_post_urls", p_url)
                             await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
@@ -278,17 +286,19 @@ async def poll_post(valkey, limiter, url, url_name):
             if last_notified_status != status:
                 await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": post, "old_status": old_status, "url": url}))
                 await valkey.set(f"notified_status:{pid}", status)
+                if not await valkey.sismember("indexed_post_urls", url):
+                    await valkey.sadd("indexed_post_urls", url)
+                    if not await valkey.exists(f"post_indexer_info:{url}"):
+                        await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                 if author_id and status.lower() in ["complete", "completed", "available in future release"]:
                     await valkey.zincrby("metrics:author_milestones", 1, author_id)
 
         current_milestone = score // 25
         last_notified_milestone = await valkey.get(f"notified_milestone:{pid}")
         last_milestone = int(last_notified_milestone) if last_notified_milestone else (old_score // 25)
-        if current_milestone > last_milestone or status.lower() in ["complete", "completed", "available in future release"]:
-            if current_milestone > last_milestone:
-                await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
-                await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
-
+        if current_milestone > last_milestone:
+            await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+            await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
             if not await valkey.sismember("indexed_post_urls", url):
                 await valkey.sadd("indexed_post_urls", url)
                 if not await valkey.exists(f"post_indexer_info:{url}"):
@@ -308,7 +318,7 @@ async def poll_post(valkey, limiter, url, url_name):
         await valkey.set(f"notified_status:{pid}", status)
         await valkey.set(f"notified_milestone:{pid}", str(score // 25))
 
-        if score >= 25 or status.lower() in ["complete", "completed", "available in future release"]:
+        if score >= 25 or status.lower() != "open":
             if not await valkey.sismember("indexed_post_urls", url):
                 await valkey.sadd("indexed_post_urls", url)
                 await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
