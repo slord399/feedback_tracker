@@ -49,8 +49,6 @@ class GuildSelect(ui.Select):
     async def callback(self, interaction: discord.Interaction):
         gid = self.values[0]
         valkey = self.bot.valkey
-        await valkey.sadd("indexed_post_urls", self.canny_url)
-        await valkey.sadd(f"guild_indexed_posts:{gid}", self.canny_url)
         await valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{self.canny_url}")
         await valkey.set(f"last_index_selection:{interaction.user.id}", str(gid), ex=300)
         await valkey.set(f"next_poll:{self.canny_url}", 0)
@@ -98,30 +96,46 @@ class MetricsSelectionView(ui.View):
         self.lang = lang
         loc = bot.localizer
         if category_prefix == "trending":
-            self.add_item(ui.Button(label=loc.get("weekly_label", lang), style=discord.ButtonStyle.primary, custom_id="trending_week"))
-            self.add_item(ui.Button(label=loc.get("monthly_label", lang), style=discord.ButtonStyle.primary, custom_id="trending_month"))
+            btn_w = ui.Button(label=loc.get("weekly_label", lang), style=discord.ButtonStyle.primary)
+            btn_w.callback = self.weekly_callback
+            self.add_item(btn_w)
+            btn_m = ui.Button(label=loc.get("monthly_label", lang), style=discord.ButtonStyle.primary)
+            btn_m.callback = self.monthly_callback
+            self.add_item(btn_m)
         else:
-            self.add_item(ui.Button(label=loc.get("posts_label", lang), style=discord.ButtonStyle.primary, custom_id="top_authors"))
-            self.add_item(ui.Button(label=loc.get("milestones_label", lang), style=discord.ButtonStyle.primary, custom_id="top_milestones"))
+            btn_p = ui.Button(label=loc.get("posts_label", lang), style=discord.ButtonStyle.primary)
+            btn_p.callback = self.authors_callback
+            self.add_item(btn_p)
+            btn_mil = ui.Button(label=loc.get("milestones_label", lang), style=discord.ButtonStyle.primary)
+            btn_mil.callback = self.milestones_callback
+            self.add_item(btn_mil)
 
-        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close")
+        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger)
+        close_btn.callback = self.close_callback
         self.add_item(close_btn)
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        custom_id = interaction.data.get("custom_id")
-        if custom_id == "close":
-            try:
-                await interaction.response.defer()
-                await interaction.message.delete()
-            except: pass
-            # We don't call self.stop() here so the view doesn't become "dead" for other messages
-            return False
+    async def weekly_callback(self, interaction: discord.Interaction):
+        await self._do_metrics(interaction, "trending_week")
 
-        # Ack the interaction to prevent "Interaction failed" errors
+    async def monthly_callback(self, interaction: discord.Interaction):
+        await self._do_metrics(interaction, "trending_month")
+
+    async def authors_callback(self, interaction: discord.Interaction):
+        await self._do_metrics(interaction, "top_authors")
+
+    async def milestones_callback(self, interaction: discord.Interaction):
+        await self._do_metrics(interaction, "top_milestones")
+
+    async def _do_metrics(self, interaction: discord.Interaction, category: str):
         try: await interaction.response.defer()
         except: pass
-        await self.bot._send_metrics(interaction, custom_id, deferred=True)
-        return True
+        await self.bot._send_metrics(interaction, category, deferred=True)
+
+    async def close_callback(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.defer()
+            await interaction.message.delete()
+        except: pass
 
 class MetricsResultView(ui.View):
     def __init__(self, bot, lang="English"):
@@ -226,8 +240,6 @@ class SearchView(ui.View):
         if lgid:
             gid = int(lgid)
             if any(str(g['id']) == str(gid) for g in all_guilds):
-                await self.bot.valkey.sadd("indexed_post_urls", url)
-                await self.bot.valkey.sadd(f"guild_indexed_posts:{gid}", url)
                 await self.bot.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
                 await self.bot.valkey.set(f"next_poll:{url}", 0)
                 cfg = await self.bot.valkey.hgetall(f"guild_config:{gid}")
@@ -510,8 +522,6 @@ class MyBot(commands.Bot):
         if lgid:
             gid = int(lgid)
             if any(str(g['id']) == str(gid) for g in all_guilds):
-                await self.valkey.sadd("indexed_post_urls", url)
-                await self.valkey.sadd(f"guild_indexed_posts:{gid}", url)
                 await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
                 await self.valkey.set(f"next_poll:{url}", 0)
                 cfg = await self.valkey.hgetall(f"guild_config:{gid}")
@@ -651,7 +661,7 @@ class MyBot(commands.Bot):
             async def progress_callback(n):
                 nonlocal discovered_count
                 discovered_count += n
-                if discovered_count % 10000 == 0:
+                if discovered_count % 500 == 0:
                     msg = self.localizer.get("polling_progress", lang, count=f"{discovered_count:,}")
                     try: await interaction.channel.send(msg)
                     except: pass
@@ -821,10 +831,13 @@ async def bulk_add(interaction: discord.Interaction):
         for u in urls:
             u = clean_url(u)
             if "canny.io" in u or "feedback.vrchat.com" in u:
-                await bot.valkey.sadd("indexed_post_urls", u)
-                await bot.valkey.sadd(f"guild_indexed_posts:{interaction.guild_id}", u)
-                await bot.valkey.hset(f"post_indexer_info:{u}", mapping={"name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)})
                 await bot.valkey.set(f"next_poll:{u}", 0)
+                await bot.valkey.lpush("{discord_jobs}_priority", json.dumps({
+                    "type": "index_confirm", "url": u, "guild_id": interaction.guild_id,
+                    "channel_id": interaction.channel_id, "user_id": interaction.user.id,
+                    "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url),
+                    "purge": False
+                }))
                 found += 1
     await interaction.followup.send(f"Added {found} URLs.")
 

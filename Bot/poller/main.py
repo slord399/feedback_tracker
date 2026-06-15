@@ -27,8 +27,9 @@ async def discover_boards(valkey, limiter):
     logger.debug("Discovering boards...")
     await limiter.acquire()
     data = await fetch_canny_data("https://feedback.vrchat.com/")
-    if isinstance(data, dict) and data.get("error") == "rate_limit":
-        logger.warning("Rate limited during board discovery. Sleeping for 30 minutes.")
+    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+        err = data.get("error")
+        logger.warning(f"{err.replace('_', ' ').capitalize()} during board discovery. Sleeping for 30 minutes.")
         await asyncio.sleep(1800)
         return []
     if not data:
@@ -61,8 +62,9 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         url = f"{board_url}?sort=new&batchSize=100&page={page}"
         await limiter.acquire()
         data = await fetch_canny_data(url)
-        if isinstance(data, dict) and data.get("error") == "rate_limit":
-            logger.warning(f"Rate limited during board crawl for {board['name']}. Sleeping for 30 minutes.")
+        if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+            err = data.get("error")
+            logger.warning(f"{err.replace('_', ' ').capitalize()} during board crawl for {board['name']}. Sleeping for 30 minutes.")
             await asyncio.sleep(1800)
             continue
         if not data: break
@@ -166,9 +168,10 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                     await valkey.set(f"notified_status:{pid}", status)
                     await valkey.set(f"notified_milestone:{pid}", str(score // 25))
 
-                    if score >= 25:
-                        await valkey.sadd("indexed_post_urls", p_url)
-                        await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": ""})
+                    if score >= 25 or status.lower() in ["complete", "completed", "available in future release"]:
+                        if not await valkey.sismember("indexed_post_urls", p_url):
+                            await valkey.sadd("indexed_post_urls", p_url)
+                            await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
 
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
                 await valkey.set(f"post_full_cache:{p_url}", json.dumps(full_post), ex=86400)
@@ -190,9 +193,6 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                 "created": created_ts
             }))
 
-            if is_new:
-                await valkey.hincrby("stats:board_posts", board["name"], 1)
-
             total_indexed += 1
             if total_indexed % 100 == 0:
                 logger.info(f"Board {board['name']} progress: {total_indexed} posts discovered...")
@@ -210,6 +210,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         if page > 5000: break
 
     await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=600)
+    await valkey.hset("stats:board_posts", board["name"], total_indexed)
     # Clean up crawl_seen
     async for key in valkey.scan_iter(f"crawl_seen:{board['id']}:*"):
         await valkey.delete(key)
@@ -244,8 +245,8 @@ def get_polling_interval(post):
 async def poll_post(valkey, limiter, url, url_name):
     await limiter.acquire()
     data = await fetch_canny_data(url)
-    if isinstance(data, dict) and data.get("error") == "rate_limit":
-        return "rate_limit"
+    if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+        return data.get("error")
     post = extract_post_from_data(data, url_name)
     if not post: return None
     pid = post.get("_id")
@@ -283,12 +284,15 @@ async def poll_post(valkey, limiter, url, url_name):
         current_milestone = score // 25
         last_notified_milestone = await valkey.get(f"notified_milestone:{pid}")
         last_milestone = int(last_notified_milestone) if last_notified_milestone else (old_score // 25)
-        if current_milestone > last_milestone:
-            await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
-            await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
-            await valkey.sadd("indexed_post_urls", url)
-            if not await valkey.exists(f"post_indexer_info:{url}"):
-                await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": ""})
+        if current_milestone > last_milestone or status.lower() in ["complete", "completed", "available in future release"]:
+            if current_milestone > last_milestone:
+                await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
+                await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
+
+            if not await valkey.sismember("indexed_post_urls", url):
+                await valkey.sadd("indexed_post_urls", url)
+                if not await valkey.exists(f"post_indexer_info:{url}"):
+                    await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
             if author_id:
                 milestone_delta = current_milestone - last_milestone
                 await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
@@ -304,9 +308,10 @@ async def poll_post(valkey, limiter, url, url_name):
         await valkey.set(f"notified_status:{pid}", status)
         await valkey.set(f"notified_milestone:{pid}", str(score // 25))
 
-        if score >= 25:
-            await valkey.sadd("indexed_post_urls", url)
-            await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": ""})
+        if score >= 25 or status.lower() in ["complete", "completed", "available in future release"]:
+            if not await valkey.sismember("indexed_post_urls", url):
+                await valkey.sadd("indexed_post_urls", url)
+                await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
 
     await valkey.set(f"post_cache:{pid}", json.dumps(post))
     await valkey.set(f"post_full_cache:{url}", json.dumps(post), ex=86400)
@@ -336,8 +341,9 @@ async def poller_loop():
             for b in boards:
                 await limiter.acquire()
                 data = await fetch_canny_data(f"{b['url']}?sort=new")
-                if isinstance(data, dict) and data.get("error") == "rate_limit":
-                    logger.warning("Rate limited during poller loop board refresh. Sleeping for 30 minutes.")
+                if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error"]:
+                    err = data.get("error")
+                    logger.warning(f"{err.replace('_', ' ').capitalize()} during poller loop board refresh. Sleeping for 30 minutes.")
                     await asyncio.sleep(1800)
                     continue
                 posts = extract_board_posts(data)
@@ -349,8 +355,8 @@ async def poller_loop():
                         break
                     await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
                     full_p = await poll_post(valkey, limiter, p_url, uname)
-                    if full_p == "rate_limit":
-                        logger.warning(f"Rate limited polling {p_url}. Sleeping for 30 minutes.")
+                    if full_p in ["rate_limit", "server_error"]:
+                        logger.warning(f"{full_p.replace('_', ' ').capitalize()} polling {p_url}. Sleeping for 30 minutes.")
                         await asyncio.sleep(1800)
                         break
                     if full_p:
@@ -365,8 +371,8 @@ async def poller_loop():
                     if "p" in parts:
                         name = parts[parts.index("p") + 1]
                         p = await poll_post(valkey, limiter, url, name)
-                        if p == "rate_limit":
-                            logger.warning(f"Rate limited polling {url}. Sleeping for 30 minutes.")
+                        if p in ["rate_limit", "server_error"]:
+                            logger.warning(f"{p.replace('_', ' ').capitalize()} polling {url}. Sleeping for 30 minutes.")
                             await asyncio.sleep(1800)
                             continue
                         if p: await valkey.set(key, time.time() + get_polling_interval(p))
