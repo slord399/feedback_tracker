@@ -1,4 +1,5 @@
 import discord
+import os
 from Bot.shared.localization import get_localizer
 from datetime import datetime
 
@@ -48,6 +49,18 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
 
     if current_status.lower() in ["complete", "completed", "available in future release"]:
         embed.set_thumbnail(url="attachment://Completed.png")
+    elif score >= 100:
+        fname = "100_plus_milestone.png"
+        if not os.path.exists(os.path.join("Img", fname)):
+            fname = "50_plus_milestone.png"
+            if not os.path.exists(os.path.join("Img", fname)):
+                fname = "25_plus_milestone.png"
+        embed.set_thumbnail(url=f"attachment://{fname}")
+    elif score >= 50:
+        fname = "50_plus_milestone.png"
+        if not os.path.exists(os.path.join("Img", fname)):
+            fname = "25_plus_milestone.png"
+        embed.set_thumbnail(url=f"attachment://{fname}")
     elif score >= 25:
         embed.set_thumbnail(url="attachment://25_plus_milestone.png")
 
