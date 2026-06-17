@@ -451,7 +451,10 @@ class MyBot(commands.Bot):
     async def update_activity(self):
         try:
             idx = await self.valkey.scard("indexed_post_urls")
-            tot = await self.valkey.hlen("canny_search_index")
+            # Calculate total discovered posts from stats:board_posts
+            board_stats = await self.valkey.hgetall("stats:board_posts")
+            tot = sum(int(c) for c in board_stats.values()) if board_stats else await self.valkey.hlen("canny_search_index")
+
             activity = discord.Activity(
                 type=discord.ActivityType.watching,
                 name="feedback.vrchat.com",
@@ -569,8 +572,8 @@ class MyBot(commands.Bot):
         if not urls:
             return await interaction.response.send_message("No posts indexed in the last hour.", ephemeral=True)
 
-        content = "\n".join([f"<{u}>" for u in urls[:20]])
-        await interaction.response.send_message(content)
+        content = "```\n" + "\n".join([f"<{u}>" for u in urls[:20]]) + "\n```"
+        await interaction.response.send_message(content, ephemeral=True)
 
     async def ctx_trending(self, interaction: discord.Interaction, message: discord.Message):
         lang = "English"
@@ -626,7 +629,7 @@ class MyBot(commands.Bot):
             desc = ""
             for i, (aid, count) in enumerate(data, 1):
                 name = await self.valkey.hget("metrics:author_names", aid) or aid
-                desc += f"{i}. **{name}**: {int(count)} milestones (25+ votes)\n"
+                desc += f"{i}. **{name}**: {int(count)} milestones\n"
             embed.description = desc or self.localizer.get("no_data_available", lang)
 
         view = MetricsResultView(self, lang=lang)

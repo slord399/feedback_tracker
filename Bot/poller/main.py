@@ -29,7 +29,7 @@ async def discover_boards(valkey, limiter):
     data = await fetch_canny_data("https://feedback.vrchat.com/")
     if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
         err = data.get("error")
-        wait = 10800 if err == "timeout" else 1800
+        wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
         logger.warning(f"{err.replace('_', ' ').capitalize()} during board discovery. Sleeping for {wait//60} minutes.")
         await asyncio.sleep(wait)
         return []
@@ -58,6 +58,11 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
             return total_indexed
 
     while True:
+        # User requested 60 mins wait at every 1,000 pages crawled
+        if page > 1 and page % 1000 == 1:
+            logger.info(f"Reached {page-1} pages for {board['name']}. Sleeping for 60 minutes to prevent server errors.")
+            await asyncio.sleep(3600)
+
         # Use batchSize=100 to maximize discovery, but Canny's SPA structure
         # often ignores page parameters on initial HTML fetch.
         url = f"{board_url}?sort=new&batchSize=100&page={page}"
@@ -65,7 +70,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
         data = await fetch_canny_data(url)
         if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
             err = data.get("error")
-            wait = 10800 if err == "timeout" else 1800
+            wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
             logger.warning(f"{err.replace('_', ' ').capitalize()} during board crawl for {board['name']}. Sleeping for {wait//60} minutes.")
             await asyncio.sleep(wait)
             continue
@@ -138,45 +143,58 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                         last_notified_status = await valkey.get(f"notified_status:{pid}")
                         if last_notified_status != status:
                             if not await valkey.sismember("indexed_post_urls", p_url):
-                                await valkey.sadd("indexed_post_urls", p_url)
-                                if not await valkey.exists(f"post_indexer_info:{p_url}"):
-                                    await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
+                                # Auto-index only if it meets criteria: 25+ votes or not Open
+                                if score >= 25 or status.lower() != "open":
+                                    await valkey.sadd("indexed_post_urls", p_url)
+                                    if not await valkey.exists(f"post_indexer_info:{p_url}"):
+                                        await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                             await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": full_post, "old_status": old.get("status"), "url": p_url}))
                             await valkey.set(f"notified_status:{pid}", status)
                             if author_id and status.lower() in ["complete", "completed", "available in future release"]:
                                 await valkey.zincrby("metrics:author_milestones", 1, author_id)
 
-                    current_milestone = score // 25
+                    milestones = [25, 50, 100]
+                    current_milestone_val = max([m for m in milestones if score >= m] + [0])
                     last_notified_milestone = await valkey.get(f"notified_milestone:{pid}")
-                    last_milestone = int(last_notified_milestone) if last_notified_milestone else (old_score // 25)
-                    if current_milestone > last_milestone:
+                    last_milestone_val = 0
+                    if last_notified_milestone:
+                        try:
+                            lv = int(last_notified_milestone)
+                            if lv >= 25: last_milestone_val = lv
+                            else: # old style index (1=25, 2=50, 3=75, 4=100)
+                                if lv >= 4: last_milestone_val = 100
+                                elif lv >= 2: last_milestone_val = 50
+                                elif lv >= 1: last_milestone_val = 25
+                        except: pass
+                    else:
+                        last_milestone_val = max([m for m in milestones if old_score >= m] + [0])
+
+                    if current_milestone_val > last_milestone_val:
                         if not await valkey.sismember("indexed_post_urls", p_url):
                             await valkey.sadd("indexed_post_urls", p_url)
                             if not await valkey.exists(f"post_indexer_info:{p_url}"):
                                 await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                         await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
-                        await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
+                        await valkey.set(f"notified_milestone:{pid}", str(current_milestone_val))
                         if author_id:
-                            milestone_delta = current_milestone - last_milestone
-                            await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
+                            new_passed = [m for m in milestones if score >= m and m > last_milestone_val]
+                            await valkey.zincrby("metrics:author_milestones", len(new_passed), author_id)
                 else:
                     if author_id:
                         await valkey.zincrby("metrics:author_posts", 1, author_id)
-                        milestones = score // 25
+                        milestones_list = [25, 50, 100]
+                        milestones_reached = len([m for m in milestones_list if score >= m])
                         if status.lower() in ["complete", "completed", "available in future release"]:
-                            milestones += 1
-                        if milestones > 0:
-                            await valkey.zincrby("metrics:author_milestones", milestones, author_id)
+                            milestones_reached += 1
+                        if milestones_reached > 0:
+                            await valkey.zincrby("metrics:author_milestones", milestones_reached, author_id)
 
                     # Initial discovery: don't notify unless it's new enough?
-                    # User said: "polling once again after reach 25+ milestone, bot trigger 25+ milestone embed feed once again"
-                    # We should probably only notify if it's actually a new event for us.
-                    # For historical crawl, we probably don't want to notify.
-                    # But for "Index this Canny", we DO want to notify (that's handled by worker though).
-
                     # Set initial notified states to prevent duplicate notifications on next poll
                     await valkey.set(f"notified_status:{pid}", status)
-                    await valkey.set(f"notified_milestone:{pid}", str(score // 25))
+                    milestones_list = [25, 50, 100]
+                    current_milestone_val = max([m for m in milestones_list if score >= m] + [0])
+                    await valkey.set(f"notified_milestone:{pid}", str(current_milestone_val))
 
                     if score >= 25 or status.lower() != "open":
                         if not await valkey.sismember("indexed_post_urls", p_url):
@@ -287,38 +305,56 @@ async def poll_post(valkey, limiter, url, url_name):
             last_notified_status = await valkey.get(f"notified_status:{pid}")
             if last_notified_status != status:
                 if not await valkey.sismember("indexed_post_urls", url):
-                    await valkey.sadd("indexed_post_urls", url)
-                    if not await valkey.exists(f"post_indexer_info:{url}"):
-                        await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
+                    # Auto-index only if it meets criteria: 25+ votes or not Open
+                    if score >= 25 or status.lower() != "open":
+                        await valkey.sadd("indexed_post_urls", url)
+                        if not await valkey.exists(f"post_indexer_info:{url}"):
+                            await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                 await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": post, "old_status": old_status, "url": url}))
                 await valkey.set(f"notified_status:{pid}", status)
                 if author_id and status.lower() in ["complete", "completed", "available in future release"]:
                     await valkey.zincrby("metrics:author_milestones", 1, author_id)
 
-        current_milestone = score // 25
+        milestones = [25, 50, 100]
+        current_milestone_val = max([m for m in milestones if score >= m] + [0])
         last_notified_milestone = await valkey.get(f"notified_milestone:{pid}")
-        last_milestone = int(last_notified_milestone) if last_notified_milestone else (old_score // 25)
-        if current_milestone > last_milestone:
+        last_milestone_val = 0
+        if last_notified_milestone:
+            try:
+                lv = int(last_notified_milestone)
+                if lv >= 25: last_milestone_val = lv
+                else: # old style index
+                    if lv >= 4: last_milestone_val = 100
+                    elif lv >= 2: last_milestone_val = 50
+                    elif lv >= 1: last_milestone_val = 25
+            except: pass
+        else:
+            last_milestone_val = max([m for m in milestones if old_score >= m] + [0])
+
+        if current_milestone_val > last_milestone_val:
             if not await valkey.sismember("indexed_post_urls", url):
                 await valkey.sadd("indexed_post_urls", url)
                 if not await valkey.exists(f"post_indexer_info:{url}"):
                     await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
             await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
-            await valkey.set(f"notified_milestone:{pid}", str(current_milestone))
+            await valkey.set(f"notified_milestone:{pid}", str(current_milestone_val))
             if author_id:
-                milestone_delta = current_milestone - last_milestone
-                await valkey.zincrby("metrics:author_milestones", milestone_delta, author_id)
+                new_passed = [m for m in milestones if score >= m and m > last_milestone_val]
+                await valkey.zincrby("metrics:author_milestones", len(new_passed), author_id)
     else:
         if author_id:
             await valkey.zincrby("metrics:author_posts", 1, author_id)
-            milestones = score // 25
+            milestones_list = [25, 50, 100]
+            milestones_reached = len([m for m in milestones_list if score >= m])
             if status.lower() in ["complete", "completed", "available in future release"]:
-                milestones += 1
-            if milestones > 0:
-                await valkey.zincrby("metrics:author_milestones", milestones, author_id)
+                milestones_reached += 1
+            if milestones_reached > 0:
+                await valkey.zincrby("metrics:author_milestones", milestones_reached, author_id)
 
         await valkey.set(f"notified_status:{pid}", status)
-        await valkey.set(f"notified_milestone:{pid}", str(score // 25))
+        milestones_list = [25, 50, 100]
+        current_milestone_val = max([m for m in milestones_list if score >= m] + [0])
+        await valkey.set(f"notified_milestone:{pid}", str(current_milestone_val))
 
         if score >= 25 or status.lower() != "open":
             if not await valkey.sismember("indexed_post_urls", url):
@@ -355,7 +391,7 @@ async def poller_loop():
                 data = await fetch_canny_data(f"{b['url']}?sort=new")
                 if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                     err = data.get("error")
-                    wait = 10800 if err == "timeout" else 1800
+                    wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
                     logger.warning(f"{err.replace('_', ' ').capitalize()} during poller loop board refresh. Sleeping for {wait//60} minutes.")
                     await asyncio.sleep(wait)
                     continue
@@ -369,7 +405,7 @@ async def poller_loop():
                     await valkey.set(f"post_cache_lite:{uname}", "1", ex=86400*7)
                     full_p = await poll_post(valkey, limiter, p_url, uname)
                     if full_p in ["rate_limit", "server_error", "timeout"]:
-                        wait = 10800 if full_p == "timeout" else 1800
+                        wait = 10800 if full_p == "timeout" else (3600 if full_p == "server_error" else 1800)
                         logger.warning(f"{full_p.replace('_', ' ').capitalize()} polling {p_url}. Sleeping for {wait//60} minutes.")
                         await asyncio.sleep(wait)
                         break
@@ -386,7 +422,7 @@ async def poller_loop():
                         name = parts[parts.index("p") + 1]
                         p = await poll_post(valkey, limiter, url, name)
                         if p in ["rate_limit", "server_error", "timeout"]:
-                            wait = 10800 if p == "timeout" else 1800
+                            wait = 10800 if p == "timeout" else (3600 if p == "server_error" else 1800)
                             logger.warning(f"{p.replace('_', ' ').capitalize()} polling {url}. Sleeping for {wait//60} minutes.")
                             await asyncio.sleep(wait)
                             continue

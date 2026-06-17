@@ -83,7 +83,7 @@ class Worker:
                     data = await fetch_canny_data(job["url"])
                     if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                         err = data.get("error")
-                        wait = 10800 if err == "timeout" else 1800
+                        wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
                         logger.warning(f"Worker encountered {err.replace('_', ' ').capitalize()} for {job['url']}. Sleeping for {wait//60} minutes.")
                         await asyncio.sleep(wait)
                         await self.valkey.lpush(res[0], json.dumps(job)) # Put it back
@@ -184,13 +184,17 @@ class Worker:
     def get_milestone_file(self, post):
         status = post.get("status", "").lower()
         score = post.get("score", 0)
-        fname = None
+        fnames = []
         if status in ["complete", "completed", "available in future release"]:
-            fname = "Completed.png"
+            fnames = ["Completed.png"]
+        elif score >= 100:
+            fnames = ["100_plus_milestone.png", "50_plus_milestone.png", "25_plus_milestone.png"]
+        elif score >= 50:
+            fnames = ["50_plus_milestone.png", "25_plus_milestone.png"]
         elif score >= 25:
-            fname = "25_plus_milestone.png"
+            fnames = ["25_plus_milestone.png"]
 
-        if fname:
+        for fname in fnames:
             path = os.path.join("Img", fname)
             if os.path.exists(path):
                 with open(path, "rb") as f:
