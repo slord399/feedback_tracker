@@ -402,7 +402,7 @@ class MyBot(commands.Bot):
                     await interaction.message.delete()
                     return
                 except: pass
-        await self.process_application_commands(interaction)
+        await self.tree.process_interaction(interaction)
 
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
