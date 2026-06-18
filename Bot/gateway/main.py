@@ -393,18 +393,17 @@ class MyBot(commands.Bot):
             await register_guild(self.valkey, guild)
         logger.info(f"Synced {len(self.guilds)} guilds to Valkey.")
 
-    async def on_interaction(self, interaction: discord.Interaction):
+    async def handle_close_button(self, interaction: discord.Interaction):
         if interaction.type == discord.InteractionType.component:
             custom_id = interaction.data.get("custom_id")
             if custom_id == "close_message":
                 try:
                     await interaction.response.defer()
                     await interaction.message.delete()
-                    return
                 except: pass
-        await self.tree.process_interaction(interaction)
 
     async def setup_hook(self):
+        self.add_listener(self.handle_close_button, "on_interaction")
         logger.info(f"Setting up Shard {self.shard_id}...")
         self.loop.create_task(self.sync_guilds_to_valkey())
 
