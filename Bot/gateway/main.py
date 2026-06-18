@@ -94,8 +94,21 @@ async def universal_close_callback(interaction: discord.Interaction):
         if interaction.message:
             await interaction.message.delete()
             logger.info(f"Closed message {interaction.message.id} via interaction {interaction.id}")
+        else:
+            # Interaction might be from a deleted message or something else
+            logger.warning(f"Close interaction {interaction.id} had no message attached.")
+    except discord.NotFound:
+        logger.info(f"Message for interaction {interaction.id} already deleted.")
     except Exception as e:
         logger.error(f"Failed to delete message via close button: {e}")
+
+class PersistentCloseView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(label="Close", style=discord.ButtonStyle.danger, custom_id="close_message")
+    async def close_button(self, interaction: discord.Interaction, button: ui.Button):
+        await universal_close_callback(interaction)
 
 class MetricsSelectionView(ui.View):
     def __init__(self, bot, category_prefix, interaction, lang="English"):
@@ -405,14 +418,20 @@ class MyBot(commands.Bot):
             await register_guild(self.valkey, guild)
         logger.info(f"Synced {len(self.guilds)} guilds to Valkey.")
 
-    @commands.Bot.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type == discord.InteractionType.component:
-            if interaction.data.get("custom_id") == "close_message":
-                await universal_close_callback(interaction)
+    async def handle_close_interaction(self, interaction: discord.Interaction):
+        try:
+            if interaction.type == discord.InteractionType.component:
+                cid = interaction.data.get("custom_id")
+                if cid == "close_message":
+                    logger.info(f"Close interaction {interaction.id} received for custom_id {cid}")
+                    await universal_close_callback(interaction)
+        except Exception as e:
+            logger.error(f"Error in handle_close_interaction: {e}")
 
     async def setup_hook(self):
-        logger.info(f"Setting up Shard {self.shard_id}...")
+        self.add_view(PersistentCloseView())
+        self.add_listener(self.handle_close_interaction, "on_interaction")
+        logger.info(f"Setting up Shard {self.shard_id} with persistent close view.")
         self.loop.create_task(self.sync_guilds_to_valkey())
 
         cmd_force = app_commands.Command(name="force_polling", description="Force polling of all Canny posts", callback=self.force_polling)

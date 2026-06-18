@@ -17,6 +17,7 @@ def extract_canny_urls(message):
     """
     Extracts Canny URLs from message content and embeds.
     """
+    logger.info(f"Extracting Canny URLs from message {message.id}")
     urls = []
     # 1. Extract from message content
     if message.content:
@@ -47,6 +48,9 @@ def extract_canny_urls(message):
         if ("canny.io" in u or "feedback.vrchat.com" in u) and u not in seen:
             canny_urls.append(u)
             seen.add(u)
+
+    if canny_urls:
+        logger.info(f"Found {len(canny_urls)} Canny URLs in message {message.id}")
     return canny_urls
 
 def extract_post_url_name(url):
