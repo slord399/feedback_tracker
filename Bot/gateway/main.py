@@ -264,7 +264,7 @@ class SearchView(ui.View):
         lang = "English"
         if interaction.guild_id: lang = await self.bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
         embed = create_canny_embed(post, lang=lang)
-        await interaction.followup.send(embed=embed, view=create_canny_view(url), ephemeral=ephemeral)
+        await interaction.followup.send(embed=embed, view=create_canny_view(url, lang=lang, with_close=True), ephemeral=ephemeral)
 
     async def index_selected(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
@@ -598,7 +598,7 @@ class MyBot(commands.Bot):
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
         user_info = {"type": "requested", "name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)}
         embed = create_canny_embed(post, lang=lang, user_info=user_info)
-        await interaction.followup.send(embed=embed, view=create_canny_view(url))
+        await interaction.followup.send(embed=embed, view=create_canny_view(url, lang=lang, with_close=True))
 
     async def post_indexed_hour(self, interaction: discord.Interaction, message: discord.Message):
         idx = await self.valkey.smembers(f"user_indexed_posts:{interaction.user.id}")
@@ -611,7 +611,7 @@ class MyBot(commands.Bot):
         if not urls:
             return await interaction.response.send_message("No posts indexed in the last hour.", ephemeral=True)
 
-        content = "```\n" + "\n".join([f"<{u}>" for u in urls[:20]]) + "\n```"
+        content = "\n\n".join([f"{u}" for u in urls[:20]])
         await interaction.response.send_message(content, ephemeral=True)
 
     async def ctx_trending(self, interaction: discord.Interaction, message: discord.Message):
@@ -916,7 +916,7 @@ async def test_feed(interaction: discord.Interaction, canny_url: str):
         return await interaction.followup.send(bot.localizer.get("post_not_found", lang), ephemeral=True)
     user_info = {"type": "requested", "name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)}
     embed = create_canny_embed(post, lang=lang, user_info=user_info)
-    await interaction.followup.send(embed=embed, view=create_canny_view(url), ephemeral=True)
+    await interaction.followup.send(embed=embed, view=create_canny_view(url, lang=lang, with_close=True), ephemeral=True)
 
 if __name__ == "__main__":
     t = os.getenv("DISCORD_TOKEN")

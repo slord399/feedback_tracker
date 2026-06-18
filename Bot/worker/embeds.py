@@ -87,11 +87,12 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
 
     return embed
 
-def create_canny_view(post_url, lang="English"):
+def create_canny_view(post_url, lang="English", with_close=False):
     loc = get_localizer()
     view = discord.ui.View(timeout=None)
     view.add_item(discord.ui.Button(label="feedback.vrchat.com", url=post_url))
     view.add_item(discord.ui.Button(label="vrchat.canny.io", url=post_url.replace("feedback.vrchat.com", "vrchat.canny.io")))
     view.add_item(discord.ui.Button(label="Archive.org", url=f"https://web.archive.org/web/{post_url}"))
-    view.add_item(discord.ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close_message"))
+    if with_close:
+        view.add_item(discord.ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close_message"))
     return view
