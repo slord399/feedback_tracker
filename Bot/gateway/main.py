@@ -611,7 +611,7 @@ class MyBot(commands.Bot):
         if not urls:
             return await interaction.response.send_message("No posts indexed in the last hour.", ephemeral=True)
 
-        content = "\n\n".join([f"{u}" for u in urls[:20]])
+        content = "```\n" + "\n\n".join([f"{u}" for u in urls[:20]]) + "\n```"
         await interaction.response.send_message(content, ephemeral=True)
 
     async def ctx_trending(self, interaction: discord.Interaction, message: discord.Message):
