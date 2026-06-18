@@ -117,16 +117,24 @@ class Worker:
                     await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
 
                     if not is_already_indexed:
-                        for oid in await get_active_guilds(self.valkey):
-                            if str(oid) == str(gid): continue
-                            cfg = await self.valkey.hgetall(f"guild_config:{oid}")
-                            mode = cfg.get("mode", "global")
-                            if mode == "global" and cfg.get("status_channel"):
-                                await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
-                                olang = cfg.get("language", "English")
-                                oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Indexed by Global Mode", "icon": None}, lang=olang)
-                                files = self.get_milestone_file(post)
-                                await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=olang))}, oid, files=files)
+                        score = post.get("score", 0)
+                        status = post.get("status", "open").lower()
+                        # Only broadcast to global mode if it meets criteria
+                        if score >= 25 or status != "open":
+                            for oid in await get_active_guilds(self.valkey):
+                                if str(oid) == str(gid): continue
+                                cfg = await self.valkey.hgetall(f"guild_config:{oid}")
+                                mode = cfg.get("mode", "global")
+                                if mode == "global" and cfg.get("status_channel"):
+                                    # Secondary check for suppression rules
+                                    if status == "closed" and score <= 1: continue
+                                    if status == "needs more information" and score < 5: continue
+
+                                    await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
+                                    olang = cfg.get("language", "English")
+                                    oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Indexed by Global Mode", "icon": None}, lang=olang)
+                                    files = self.get_milestone_file(post)
+                                    await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=olang))}, oid, files=files)
 
                 elif job["type"] == "check_status":
                     gid = job.get("guild_id")
@@ -152,9 +160,14 @@ class Worker:
                         mode = cfg.get("mode", "global")
                         is_indexed = await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"])
                         if is_indexed or mode == "global":
+                            status = post.get("status", "open").lower()
+                            score = post.get("score", 0)
+
                             if not is_indexed:
-                                status = post.get("status", "open").lower()
-                                score = post.get("score", 0)
+                                # Milestone check for global feed
+                                if score < 25 and status == "open":
+                                    continue
+                                # Suppression rules
                                 if status == "closed" and score <= 1:
                                     continue
                                 if status == "needs more information" and score < 5:
