@@ -19,16 +19,13 @@ from discord.ext import commands, tasks
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, register_guild, get_all_guilds
 from Bot.shared.localization import get_localizer
-from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts
+from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts, extract_canny_urls, extract_post_url_name
 from Bot.shared.rate_limit import get_global_limiter
 from Bot.poller.main import discover_boards, poll_board_recursive
 from Bot.worker.embeds import create_canny_embed, create_canny_view
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway")
-
-def clean_url(url):
-    return url.rstrip(')')
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing"
 
@@ -38,23 +35,26 @@ GUILD_ONLY_INSTALLS = app_commands.AppInstallationType(guild=True)
 GUILD_ONLY_CONTEXTS = app_commands.AppCommandContext(guild=True)
 
 class GuildSelect(ui.Select):
-    def __init__(self, bot, guilds, canny_url, message_id=None, lang="English"):
+    def __init__(self, bot, guilds, canny_urls, message_id=None, lang="English"):
         options = [discord.SelectOption(label=g['name'], value=str(g['id'])) for g in guilds[:25]]
         placeholder = bot.localizer.get("select_server_placeholder", lang)
         super().__init__(placeholder=placeholder, options=options)
         self.bot = bot
-        self.canny_url = canny_url
+        self.canny_urls = canny_urls if isinstance(canny_urls, list) else [canny_urls]
         self.message_id = message_id
 
     async def callback(self, interaction: discord.Interaction):
         gid = self.values[0]
         valkey = self.bot.valkey
-        await valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{self.canny_url}")
         await valkey.set(f"last_index_selection:{interaction.user.id}", str(gid), ex=300)
-        await valkey.set(f"next_poll:{self.canny_url}", 0)
         cfg = await valkey.hgetall(f"guild_config:{gid}")
         target_cid = int(cfg.get("status_channel") or interaction.channel_id)
-        await valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": self.canny_url, "guild_id": int(gid), "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": self.message_id, "purge": False}))
+
+        for url in self.canny_urls:
+            await valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
+            await valkey.set(f"next_poll:{url}", 0)
+            await valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": int(gid), "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": self.message_id, "purge": False}))
+
         lang = "English"
         if interaction.guild_id: lang = await self.bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
         msg = self.bot.localizer.get("indexed_msg", lang)
@@ -110,8 +110,7 @@ class MetricsSelectionView(ui.View):
             btn_mil.callback = self.milestones_callback
             self.add_item(btn_mil)
 
-        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger)
-        close_btn.callback = self.close_callback
+        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close_message")
         self.add_item(close_btn)
 
     async def weekly_callback(self, interaction: discord.Interaction):
@@ -131,26 +130,12 @@ class MetricsSelectionView(ui.View):
         except: pass
         await self.bot._send_metrics(interaction, category, deferred=True)
 
-    async def close_callback(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer()
-            await interaction.message.delete()
-        except: pass
-
 class MetricsResultView(ui.View):
     def __init__(self, bot, lang="English"):
         super().__init__(timeout=None)
         loc = bot.localizer
-        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger)
-        close_btn.callback = self.close_callback
+        close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close_message")
         self.add_item(close_btn)
-
-    async def close_callback(self, interaction: discord.Interaction):
-        try:
-            await interaction.response.defer()
-            await interaction.message.delete()
-        except: pass
-        self.stop()
 
 class SearchView(ui.View):
     def __init__(self, results, page=0, bot=None, ephemeral=True, lang="English"):
@@ -408,6 +393,17 @@ class MyBot(commands.Bot):
             await register_guild(self.valkey, guild)
         logger.info(f"Synced {len(self.guilds)} guilds to Valkey.")
 
+    async def on_interaction(self, interaction: discord.Interaction):
+        if interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get("custom_id")
+            if custom_id == "close_message":
+                try:
+                    await interaction.response.defer()
+                    await interaction.message.delete()
+                    return
+                except: pass
+        await self.process_application_commands(interaction)
+
     async def setup_hook(self):
         logger.info(f"Setting up Shard {self.shard_id}...")
         self.loop.create_task(self.sync_guilds_to_valkey())
@@ -499,15 +495,13 @@ class MyBot(commands.Bot):
         is_react = await self.valkey.sismember(f"guild_react_channels:{message.guild.id}", str(message.channel.id))
         is_status = (str(message.channel.id) == status_chan)
         if is_react or is_status:
-            urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)
+            urls = extract_canny_urls(message)
             canny_found = False
             for u in urls:
-                u = clean_url(u)
-                if "canny.io" in u or "feedback.vrchat.com" in u:
-                    canny_found = True
-                    await self.valkey.set(f"next_poll:{u}", 0)
-                    target_cid = int(status_chan or message.channel.id)
-                    await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": u, "guild_id": message.guild.id, "channel_id": target_cid, "original_channel_id": message.channel.id, "user_id": message.author.id, "user_name": message.author.name, "user_icon": str(message.author.display_avatar.url), "original_message_id": message.id, "purge": is_status}))
+                canny_found = True
+                await self.valkey.set(f"next_poll:{u}", 0)
+                target_cid = int(status_chan or message.channel.id)
+                await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": u, "guild_id": message.guild.id, "channel_id": target_cid, "original_channel_id": message.channel.id, "user_id": message.author.id, "user_name": message.author.name, "user_icon": str(message.author.display_avatar.url), "original_message_id": message.id, "purge": is_status}))
             if canny_found and is_status:
                 try: await message.edit(suppress=True)
                 except: pass
@@ -516,41 +510,40 @@ class MyBot(commands.Bot):
         lang = "English"
         if interaction.guild_id:
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
-        urls = [clean_url(u) for u in re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)]
-        url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
-        if not url:
+        urls = extract_canny_urls(message)
+        if not urls:
             return await interaction.response.send_message(self.localizer.get("no_url_found", lang), ephemeral=True)
         lgid = await self.valkey.get(f"last_index_selection:{interaction.user.id}")
         all_guilds = await get_all_guilds(self.valkey)
         if lgid:
             gid = int(lgid)
             if any(str(g['id']) == str(gid) for g in all_guilds):
-                await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
-                await self.valkey.set(f"next_poll:{url}", 0)
                 cfg = await self.valkey.hgetall(f"guild_config:{gid}")
                 target_cid = int(cfg.get("status_channel") or interaction.channel_id)
-                await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))
+                for url in urls:
+                    await self.valkey.sadd(f"user_indexed_posts:{interaction.user.id}", f"{int(time.time())}|{url}")
+                    await self.valkey.set(f"next_poll:{url}", 0)
+                    await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": gid, "channel_id": target_cid, "original_channel_id": interaction.channel_id, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "original_message_id": message.id, "purge": False}))
                 try: await message.edit(suppress=True)
                 except: pass
                 return await interaction.response.send_message(self.localizer.get("indexed_msg", lang), ephemeral=True)
         if not all_guilds:
             return await interaction.response.send_message(self.localizer.get("bot_not_in_servers", lang), ephemeral=True)
         view = ui.View()
-        view.add_item(GuildSelect(self, all_guilds, url, message.id, lang=lang))
+        view.add_item(GuildSelect(self, all_guilds, urls, message.id, lang=lang))
         await interaction.response.send_message(self.localizer.get("select_server_placeholder", lang), view=view, ephemeral=True)
 
     async def check_canny_status(self, interaction: discord.Interaction, message: discord.Message):
         lang = "English"
         if interaction.guild_id:
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
-        urls = [clean_url(u) for u in re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)]
-        url = next((u for u in urls if "canny.io" in u or "feedback.vrchat.com" in u), None)
+        urls = extract_canny_urls(message)
+        url = urls[0] if urls else None
         if not url:
             return await interaction.response.send_message(self.localizer.get("no_url_found", lang), ephemeral=True)
         await interaction.response.defer(ephemeral=False)
         data = await fetch_canny_data(url)
-        parts = url.split("/")
-        uname = parts[parts.index("p") + 1] if "p" in parts else None
+        uname = extract_post_url_name(url)
         post = extract_post_from_data(data, uname)
         if not post:
             return await interaction.followup.send(self.localizer.get("post_not_found", lang), ephemeral=True)
@@ -830,18 +823,16 @@ async def bulk_add(interaction: discord.Interaction):
     await interaction.response.defer()
     found = 0
     async for msg in interaction.channel.history(limit=100):
-        urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', msg.content)
+        urls = extract_canny_urls(msg)
         for u in urls:
-            u = clean_url(u)
-            if "canny.io" in u or "feedback.vrchat.com" in u:
-                await bot.valkey.set(f"next_poll:{u}", 0)
-                await bot.valkey.lpush("{discord_jobs}_priority", json.dumps({
-                    "type": "index_confirm", "url": u, "guild_id": interaction.guild_id,
-                    "channel_id": interaction.channel_id, "user_id": interaction.user.id,
-                    "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url),
-                    "purge": False
-                }))
-                found += 1
+            await bot.valkey.set(f"next_poll:{u}", 0)
+            await bot.valkey.lpush("{discord_jobs}_priority", json.dumps({
+                "type": "index_confirm", "url": u, "guild_id": interaction.guild_id,
+                "channel_id": interaction.channel_id, "user_id": interaction.user.id,
+                "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url),
+                "purge": False
+            }))
+            found += 1
     await interaction.followup.send(f"Added {found} URLs.")
 
 @bot.tree.command(name="set_language", description="Change UI language")
@@ -866,14 +857,14 @@ async def update_localization(interaction: discord.Interaction):
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
 async def test_feed(interaction: discord.Interaction, canny_url: str):
+    from Bot.shared.canny import clean_url as s_clean_url
     lang = "English"
     if interaction.guild_id:
         lang = await bot.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
-    url = clean_url(canny_url)
+    url = s_clean_url(canny_url)
     await interaction.response.defer(ephemeral=True)
     data = await fetch_canny_data(url)
-    parts = url.split("/")
-    uname = parts[parts.index("p") + 1] if "p" in parts else None
+    uname = extract_post_url_name(url)
     post = extract_post_from_data(data, uname)
     if not post:
         return await interaction.followup.send(bot.localizer.get("post_not_found", lang), ephemeral=True)

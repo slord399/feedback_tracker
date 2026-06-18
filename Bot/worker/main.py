@@ -23,7 +23,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, get_active_guilds
 from Bot.shared.rate_limit import get_global_limiter, get_guild_limiter
 from Bot.worker.embeds import create_canny_embed, create_canny_view
-from Bot.shared.canny import fetch_canny_data, extract_post_from_data, archive_url
+from Bot.shared.canny import fetch_canny_data, extract_post_from_data, archive_url, extract_post_url_name
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("worker")
@@ -67,6 +67,10 @@ class Worker:
     async def purge_message(self, channel_id, message_id, guild_id=None):
         await self.send_request("DELETE", f"/channels/{channel_id}/messages/{message_id}", guild_id=guild_id)
 
+    async def delayed_repush(self, queue_name, job, wait):
+        await asyncio.sleep(wait)
+        await self.valkey.lpush(queue_name, json.dumps(job))
+
     async def run(self):
         logger.info("Worker started")
         while True:
@@ -84,12 +88,10 @@ class Worker:
                     if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                         err = data.get("error")
                         wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
-                        logger.warning(f"Worker encountered {err.replace('_', ' ').capitalize()} for {job['url']}. Sleeping for {wait//60} minutes.")
-                        await asyncio.sleep(wait)
-                        await self.valkey.lpush(res[0], json.dumps(job)) # Put it back
+                        logger.warning(f"Worker encountered {err.replace('_', ' ').capitalize()} for {job['url']}. Repushing in {wait//60} minutes.")
+                        asyncio.create_task(self.delayed_repush(res[0], job, wait))
                         continue
-                    parts = job["url"].split("/")
-                    uname = parts[parts.index("p") + 1] if "p" in parts else None
+                    uname = extract_post_url_name(job["url"])
                     post = extract_post_from_data(data, uname)
 
                 if not post: continue
@@ -112,7 +114,7 @@ class Worker:
                     lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, user_info={"type": user_type, "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
                     files = self.get_milestone_file(post)
-                    await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
+                    await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
 
                     if not is_already_indexed:
                         for oid in await get_active_guilds(self.valkey):
@@ -121,9 +123,10 @@ class Worker:
                             mode = cfg.get("mode", "global")
                             if mode == "global" and cfg.get("status_channel"):
                                 await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
-                                oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Indexed by Global Mode", "icon": None}, lang=cfg.get("language", "English"))
+                                olang = cfg.get("language", "English")
+                                oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Indexed by Global Mode", "icon": None}, lang=olang)
                                 files = self.get_milestone_file(post)
-                                await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, oid, files=files)
+                                await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=olang))}, oid, files=files)
 
                 elif job["type"] == "check_status":
                     gid = job.get("guild_id")
@@ -131,7 +134,7 @@ class Worker:
                     if gid: lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
                     embed = create_canny_embed(post, lang=lang)
                     files = self.get_milestone_file(post)
-                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
+                    await self.send_request("POST", f"/channels/{job['channel_id']}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
 
                 elif job["type"] in ["status_change", "vote_progress"]:
                     await self.valkey.incr(f"stats:{job['type']}:{time.strftime('%Y-%m')}")
@@ -171,14 +174,22 @@ class Worker:
                                 user_info = {"type": "indexed", "name": u_name, "icon": u_icon}
                                 emb = create_canny_embed(post, old_status=job.get("old_status"), user_info=user_info, lang=lang)
                                 files = self.get_milestone_file(post)
-                                await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"]))}, gid, files=files)
+                                await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
             except (redis.exceptions.TimeoutError, asyncio.TimeoutError): continue
             except Exception: logger.exception("Worker error")
 
     def view_to_components(self, view):
         cs = []
         for i in view.children:
-            if isinstance(i, discord.ui.Button): cs.append({"type": 2, "style": 5, "label": i.label, "url": i.url})
+            if isinstance(i, discord.ui.Button):
+                comp = {"type": 2, "label": i.label}
+                if i.url:
+                    comp["style"] = 5
+                    comp["url"] = i.url
+                else:
+                    comp["style"] = i.style.value if hasattr(i.style, "value") else 1
+                    if i.custom_id: comp["custom_id"] = i.custom_id
+                cs.append(comp)
         return [{"type": 1, "components": cs}] if cs else []
 
     def get_milestone_file(self, post):
