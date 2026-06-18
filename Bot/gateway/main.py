@@ -87,6 +87,16 @@ class LanguageSelect(ui.Select):
         await self.valkey.hset(f"guild_config:{interaction.guild_id}", "language", lang)
         await interaction.response.edit_message(content=f"Language set to {lang}.", view=None)
 
+async def universal_close_callback(interaction: discord.Interaction):
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        if interaction.message:
+            await interaction.message.delete()
+            logger.info(f"Closed message {interaction.message.id} via interaction {interaction.id}")
+    except Exception as e:
+        logger.error(f"Failed to delete message via close button: {e}")
+
 class MetricsSelectionView(ui.View):
     def __init__(self, bot, category_prefix, interaction, lang="English"):
         super().__init__(timeout=None)
@@ -111,6 +121,7 @@ class MetricsSelectionView(ui.View):
             self.add_item(btn_mil)
 
         close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close_message")
+        close_btn.callback = universal_close_callback
         self.add_item(close_btn)
 
     async def weekly_callback(self, interaction: discord.Interaction):
@@ -135,6 +146,7 @@ class MetricsResultView(ui.View):
         super().__init__(timeout=None)
         loc = bot.localizer
         close_btn = ui.Button(label=loc.get("close_label", lang), style=discord.ButtonStyle.danger, custom_id="close_message")
+        close_btn.callback = universal_close_callback
         self.add_item(close_btn)
 
 class SearchView(ui.View):
@@ -393,17 +405,13 @@ class MyBot(commands.Bot):
             await register_guild(self.valkey, guild)
         logger.info(f"Synced {len(self.guilds)} guilds to Valkey.")
 
-    async def handle_close_button(self, interaction: discord.Interaction):
+    @commands.Bot.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
         if interaction.type == discord.InteractionType.component:
-            custom_id = interaction.data.get("custom_id")
-            if custom_id == "close_message":
-                try:
-                    await interaction.response.defer()
-                    await interaction.message.delete()
-                except: pass
+            if interaction.data.get("custom_id") == "close_message":
+                await universal_close_callback(interaction)
 
     async def setup_hook(self):
-        self.add_listener(self.handle_close_button, "on_interaction")
         logger.info(f"Setting up Shard {self.shard_id}...")
         self.loop.create_task(self.sync_guilds_to_valkey())
 
