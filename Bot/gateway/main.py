@@ -89,18 +89,42 @@ class LanguageSelect(ui.Select):
 
 async def universal_close_callback(interaction: discord.Interaction):
     try:
+        # Acknowledge immediately to prevent timeout errors
         if not interaction.response.is_done():
             await interaction.response.defer()
+
+        # Track which methods we've tried
+        methods_tried = []
+
+        # 1. Try deleting via interaction original response (most robust for user interactions)
+        try:
+            await interaction.delete_original_response()
+            logger.info(f"Deleted interaction {interaction.id} via delete_original_response.")
+            return
+        except Exception as e:
+            methods_tried.append(f"delete_original_response ({type(e).__name__})")
+
+        # 2. Try standard message deletion (works if it's a regular bot message)
         if interaction.message:
-            await interaction.message.delete()
-            logger.info(f"Closed message {interaction.message.id} via interaction {interaction.id}")
-        else:
-            # Interaction might be from a deleted message or something else
-            logger.warning(f"Close interaction {interaction.id} had no message attached.")
-    except discord.NotFound:
-        logger.info(f"Message for interaction {interaction.id} already deleted.")
+            try:
+                await interaction.message.delete()
+                logger.info(f"Deleted message {interaction.message.id} via standard delete.")
+                return
+            except Exception as e:
+                methods_tried.append(f"message.delete ({type(e).__name__})")
+
+        # 3. Last resort: Edit to clear content if delete is truly impossible (rare)
+        if interaction.message:
+            try:
+                await interaction.edit_original_response(content="[Closed]", embeds=[], view=None)
+                logger.info(f"Cleared message {interaction.message.id} via edit as fallback.")
+            except Exception as e:
+                methods_tried.append(f"edit_original_response ({type(e).__name__})")
+
+        logger.warning(f"Universal close for interaction {interaction.id} failed after trying: {', '.join(methods_tried)}")
+
     except Exception as e:
-        logger.error(f"Failed to delete message via close button: {e}")
+        logger.error(f"Universal close fatal error: {e}")
 
 class PersistentCloseView(ui.View):
     def __init__(self):
@@ -419,14 +443,10 @@ class MyBot(commands.Bot):
         logger.info(f"Synced {len(self.guilds)} guilds to Valkey.")
 
     async def handle_close_interaction(self, interaction: discord.Interaction):
-        try:
-            if interaction.type == discord.InteractionType.component:
-                cid = interaction.data.get("custom_id")
-                if cid == "close_message":
-                    logger.info(f"Close interaction {interaction.id} received for custom_id {cid}")
-                    await universal_close_callback(interaction)
-        except Exception as e:
-            logger.error(f"Error in handle_close_interaction: {e}")
+        if interaction.type == discord.InteractionType.component:
+            if interaction.data.get("custom_id") == "close_message":
+                logger.info(f"Redundant close interaction received: {interaction.id}")
+                await universal_close_callback(interaction)
 
     async def setup_hook(self):
         self.add_view(PersistentCloseView())
