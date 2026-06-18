@@ -7,6 +7,61 @@ import re
 
 logger = logging.getLogger(__name__)
 
+def clean_url(url):
+    """
+    Strips trailing punctuation and markdown characters from a URL.
+    """
+    return url.rstrip(')]>,.!?:;')
+
+def extract_canny_urls(message):
+    """
+    Extracts Canny URLs from message content and embeds.
+    """
+    urls = []
+    # 1. Extract from message content
+    if message.content:
+        found = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', message.content)
+        urls.extend([clean_url(u) for u in found])
+
+    # 2. Extract from embeds
+    for embed in message.embeds:
+        if embed.url:
+            urls.append(clean_url(embed.url))
+        if embed.title:
+            found = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', embed.title)
+            urls.extend([clean_url(u) for u in found])
+        if embed.description:
+            found = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', embed.description)
+            urls.extend([clean_url(u) for u in found])
+        if embed.author and embed.author.url:
+            urls.append(clean_url(embed.author.url))
+        for field in embed.fields:
+            if field.value:
+                found = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', field.value)
+                urls.extend([clean_url(u) for u in found])
+
+    # Filter for Canny/VRChat feedback links and remove duplicates
+    canny_urls = []
+    seen = set()
+    for u in urls:
+        if ("canny.io" in u or "feedback.vrchat.com" in u) and u not in seen:
+            canny_urls.append(u)
+            seen.add(u)
+    return canny_urls
+
+def extract_post_url_name(url):
+    """
+    Extracts the post URL name (slug) from a Canny URL.
+    Handles query parameters and trailing slashes.
+    """
+    parts = url.split("/")
+    if "p" in parts:
+        name = parts[parts.index("p") + 1]
+        # Strip query parameters, hashes and trailing punctuation
+        name = name.split("?")[0].split("#")[0].rstrip(')]>,.!?:;/')
+        return name
+    return None
+
 _session = None
 async def get_session():
     global _session
@@ -35,8 +90,8 @@ async def fetch_canny_data(url: str, retry_fallback=True):
                 if response.status == 429:
                     logger.warning(f"Rate limited (429) fetching {url}")
                     return {"error": "rate_limit"}
-                if response.status == 502:
-                    logger.error(f"Failed to fetch {url}, status: 502")
+                if response.status >= 500:
+                    logger.error(f"Failed to fetch {url}, status: {response.status}")
                     return {"error": "server_error"}
                 if response.status == 404:
                     logger.info(f"Failed to fetch {url}, status: 404")
@@ -65,6 +120,9 @@ async def fetch_canny_data(url: str, retry_fallback=True):
     except (asyncio.TimeoutError, aiohttp.ClientConnectorError) as e:
         logger.warning(f"Timeout/Connection error fetching {url}: {e}")
         return {"error": "timeout"}
+    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as e:
+        logger.warning(f"Payload/Disconnected error fetching {url}: {e}")
+        return {"error": "server_error"}
     except Exception as e:
         logger.info(f"Fetch error {url}: {e}")
     return None
