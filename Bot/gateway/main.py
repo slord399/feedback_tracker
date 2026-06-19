@@ -266,6 +266,10 @@ class SearchView(ui.View):
         embed = create_canny_embed(post, lang=lang)
         await interaction.followup.send(embed=embed, view=create_canny_view(url, lang=lang, with_close=True), ephemeral=ephemeral)
 
+        # Silent auto-index for public posts
+        if not ephemeral and interaction.guild_id:
+            await self.bot.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": interaction.guild_id, "channel_id": 0, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "purge": False}))
+
     async def index_selected(self, interaction: discord.Interaction):
         if not self.selected_url: return await interaction.response.send_message("Select a post.", ephemeral=True)
         url = await self.get_real_url(self.selected_url)
@@ -541,7 +545,7 @@ class MyBot(commands.Bot):
         return False
 
     async def on_message(self, message):
-        if message.author.bot or not message.guild:
+        if (message.author.id == self.user.id) or not message.guild:
             return
         cfg = await self.valkey.hgetall(f"guild_config:{message.guild.id}")
         status_chan = cfg.get("status_channel")
@@ -617,6 +621,10 @@ class MyBot(commands.Bot):
         user_info = {"type": "requested", "name": interaction.user.name, "icon": str(interaction.user.display_avatar.url)}
         embed = create_canny_embed(post, lang=lang, user_info=user_info)
         await interaction.followup.send(embed=embed, view=create_canny_view(url, lang=lang, with_close=True))
+
+        # Silent auto-index when checking status
+        if interaction.guild_id:
+            await self.valkey.lpush("{discord_jobs}_priority", json.dumps({"type": "index_confirm", "url": url, "guild_id": interaction.guild_id, "channel_id": 0, "user_id": interaction.user.id, "user_name": interaction.user.name, "user_icon": str(interaction.user.display_avatar.url), "purge": False}))
 
     async def post_indexed_hour(self, interaction: discord.Interaction, message: discord.Message):
         idx = await self.valkey.smembers(f"user_indexed_posts:{interaction.user.id}")

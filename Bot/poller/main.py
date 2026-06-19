@@ -202,8 +202,13 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
 
                     if score >= 25 or status.lower() != "open":
                         if not await valkey.sismember("indexed_post_urls", p_url):
-                            await valkey.sadd("indexed_post_urls", p_url)
-                            await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
+                            # Use a temporary lock to avoid pushing redundant indexing jobs
+                            if not await valkey.exists(f"indexing_pushed:{p_url}"):
+                                await valkey.set(f"indexing_pushed:{p_url}", "1", ex=3600)
+                                await valkey.lpush("{discord_jobs}_priority", json.dumps({
+                                    "type": "index_confirm", "url": p_url, "guild_id": 0, "channel_id": 0,
+                                    "user_id": 0, "user_name": "System Discovery", "user_icon": "", "purge": False
+                                }))
 
                 await valkey.set(f"post_cache:{pid}", json.dumps(full_post))
                 await valkey.set(f"post_full_cache:{p_url}", json.dumps(full_post), ex=86400)
@@ -366,8 +371,13 @@ async def poll_post(valkey, limiter, url, url_name):
 
         if score >= 25 or status.lower() != "open":
             if not await valkey.sismember("indexed_post_urls", url):
-                await valkey.sadd("indexed_post_urls", url)
-                await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
+                # Use a temporary lock to avoid pushing redundant indexing jobs
+                if not await valkey.exists(f"indexing_pushed:{url}"):
+                    await valkey.set(f"indexing_pushed:{url}", "1", ex=3600)
+                    await valkey.lpush("{discord_jobs}_priority", json.dumps({
+                        "type": "index_confirm", "url": url, "guild_id": 0, "channel_id": 0,
+                        "user_id": 0, "user_name": "System Discovery", "user_icon": "", "purge": False
+                    }))
 
     await valkey.set(f"post_cache:{pid}", json.dumps(post))
     await valkey.set(f"post_full_cache:{url}", json.dumps(post), ex=86400)
