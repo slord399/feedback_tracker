@@ -11,9 +11,6 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 - **Metrics & Insights**: Track trending feedback and recognize top contributors with detailed weekly and monthly analytics.
 - **Multi-lingual Support**: Fully localizable UI with support for 12+ languages.
 
-## Installation
-For detailed technical instructions on how to deploy, scale, and configure the bot, please refer to the [Installation & Architecture Guide](Bot/installation.md).
-
 ## Commands
 - `/stats`: View global and server-specific activity metrics.
 - `/metrics`: View top contributors and trending posts.
