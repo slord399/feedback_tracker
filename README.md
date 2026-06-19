@@ -24,8 +24,8 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 
 - `/settings`: View current server configuration.
 - `/mode`: Toggle between **Global** and **Local** tracking.
-- `/set_status_channel`: Select where updates are posted (Supports Text, Threads, and News channels).
-- `/react_channel`: Manage auto-indexing channels (Supports Text, Threads, Forum, and News channels).
+- `/set_status_channel`: Select where updates are posted (Supports Text and Thread channels).
+- `/react_channel`: Manage auto-indexing channels (Supports Text, Thread, and Forum channels).
 - `/set_language`: Change the UI language.
 - `/bulk_add`: Index Canny links from channel history.
 
