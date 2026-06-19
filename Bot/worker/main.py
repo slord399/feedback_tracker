@@ -106,15 +106,16 @@ class Worker:
                         await self.valkey.sadd("indexed_post_urls", job["url"])
                         await self.valkey.hset(f"post_indexer_info:{job['url']}", mapping={"name": job["user_name"], "icon": job.get("user_icon") or "", "guild_id": str(gid)})
 
-                    if gid and cid:
+                    if gid:
                         await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
-                        user_type = "requested" if is_already_indexed else "indexed"
+                        if cid:
+                            user_type = "requested" if is_already_indexed else "indexed"
 
-                        if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
-                        lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
-                        embed = create_canny_embed(post, user_info={"type": user_type, "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
-                        files = self.get_milestone_file(post)
-                        await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
+                            if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
+                            lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
+                            embed = create_canny_embed(post, user_info={"type": user_type, "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
+                            files = self.get_milestone_file(post)
+                            await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
 
                     if not is_already_indexed:
                         score = post.get("score", 0)
