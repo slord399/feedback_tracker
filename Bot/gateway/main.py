@@ -1,7 +1,7 @@
 import discord
 discord.VoiceClient.warn_nacl = False
 import logging
-import os, sys, json, aiohttp, re, time
+import os, sys, json, aiohttp, re, time, typing
 from datetime import datetime
 import asyncio
 
@@ -454,6 +454,13 @@ class MyBot(commands.Bot):
         logger.info(f"Setting up Shard {self.shard_id} with persistent close view.")
         self.loop.create_task(self.sync_guilds_to_valkey())
 
+        # Migration: Reset author metrics to be accurately rebuilt by the new poller logic
+        if self.shard_id is None or self.shard_id == 0:
+            if not await self.valkey.get("metrics:migration_v2_done"):
+                logger.info("Performing author metrics migration...")
+                await self.valkey.delete("metrics:author_posts", "metrics:author_milestones", "metrics:processed_posts")
+                await self.valkey.set("metrics:migration_v2_done", "1")
+
         cmd_force = app_commands.Command(name="force_polling", description="Force polling of all Canny posts", callback=self.force_polling)
         cmd_force.guild_only = True
         self.tree.add_command(cmd_force)
@@ -538,8 +545,19 @@ class MyBot(commands.Bot):
             return
         cfg = await self.valkey.hgetall(f"guild_config:{message.guild.id}")
         status_chan = cfg.get("status_channel")
-        is_react = await self.valkey.sismember(f"guild_react_channels:{message.guild.id}", str(message.channel.id))
-        is_status = (str(message.channel.id) == status_chan)
+
+        channel_ids = [str(message.channel.id)]
+        if hasattr(message.channel, 'parent_id') and message.channel.parent_id:
+            channel_ids.append(str(message.channel.parent_id))
+
+        is_react = False
+        for cid in channel_ids:
+            if await self.valkey.sismember(f"guild_react_channels:{message.guild.id}", cid):
+                is_react = True
+                break
+
+        is_status = any(cid == status_chan for cid in channel_ids)
+
         if is_react or is_status:
             urls = extract_canny_urls(message)
             canny_found = False
@@ -838,7 +856,7 @@ async def mode(interaction: discord.Interaction, mode: app_commands.Choice[str])
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
-async def set_status_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+async def set_status_channel(interaction: discord.Interaction, channel: typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.NewsChannel]):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "status_channel", str(channel.id))
     await register_guild(bot.valkey, interaction.guild)
     await interaction.response.send_message("Status channel set.")
@@ -852,7 +870,7 @@ async def set_status_channel(interaction: discord.Interaction, channel: discord.
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
-async def react_channel(interaction: discord.Interaction, action: str, channel: discord.TextChannel):
+async def react_channel(interaction: discord.Interaction, action: str, channel: typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.NewsChannel]):
     if action == "add":
         await bot.valkey.sadd(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
         await register_guild(bot.valkey, interaction.guild)

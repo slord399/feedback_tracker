@@ -124,6 +124,17 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                 if author_id:
                     await valkey.hset("metrics:author_names", author_id, author.get("name", "Unknown"))
 
+                    # Fix: Ensure author metrics respect recursive crawling results by tracking processed posts
+                    if not await valkey.sismember("metrics:processed_posts", pid):
+                        await valkey.zincrby("metrics:author_posts", 1, author_id)
+                        milestones_list = [25, 50, 100]
+                        milestones_reached = len([m for m in milestones_list if score >= m])
+                        if status.lower() in ["complete", "completed", "available in future release"]:
+                            milestones_reached += 1
+                        if milestones_reached > 0:
+                            await valkey.zincrby("metrics:author_milestones", milestones_reached, author_id)
+                        await valkey.sadd("metrics:processed_posts", pid)
+
                 if old_json:
                     old = json.loads(old_json)
                     old_score = old.get("score", 0)
@@ -150,7 +161,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                                         await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                             await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": full_post, "old_status": old.get("status"), "url": p_url}))
                             await valkey.set(f"notified_status:{pid}", status)
-                            if author_id and status.lower() in ["complete", "completed", "available in future release"]:
+                            if author_id and status.lower() in ["complete", "completed", "available in future release"] and await valkey.sismember("metrics:processed_posts", pid):
                                 await valkey.zincrby("metrics:author_milestones", 1, author_id)
 
                     milestones = [25, 50, 100]
@@ -176,19 +187,10 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
                                 await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                         await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": full_post, "url": p_url}))
                         await valkey.set(f"notified_milestone:{pid}", str(current_milestone_val))
-                        if author_id:
+                        if author_id and await valkey.sismember("metrics:processed_posts", pid):
                             new_passed = [m for m in milestones if score >= m and m > last_milestone_val]
                             await valkey.zincrby("metrics:author_milestones", len(new_passed), author_id)
                 else:
-                    if author_id:
-                        await valkey.zincrby("metrics:author_posts", 1, author_id)
-                        milestones_list = [25, 50, 100]
-                        milestones_reached = len([m for m in milestones_list if score >= m])
-                        if status.lower() in ["complete", "completed", "available in future release"]:
-                            milestones_reached += 1
-                        if milestones_reached > 0:
-                            await valkey.zincrby("metrics:author_milestones", milestones_reached, author_id)
-
                     # Initial discovery: don't notify unless it's new enough?
                     # Set initial notified states to prevent duplicate notifications on next poll
                     await valkey.set(f"notified_status:{pid}", status)
@@ -287,6 +289,17 @@ async def poll_post(valkey, limiter, url, url_name):
     if author_id:
         await valkey.hset("metrics:author_names", author_id, author.get("name", "Unknown"))
 
+        # Fix: Ensure author metrics respect recursive crawling results by tracking processed posts
+        if not await valkey.sismember("metrics:processed_posts", pid):
+            await valkey.zincrby("metrics:author_posts", 1, author_id)
+            milestones_list = [25, 50, 100]
+            milestones_reached = len([m for m in milestones_list if score >= m])
+            if status.lower() in ["complete", "completed", "available in future release"]:
+                milestones_reached += 1
+            if milestones_reached > 0:
+                await valkey.zincrby("metrics:author_milestones", milestones_reached, author_id)
+            await valkey.sadd("metrics:processed_posts", pid)
+
     if old_json:
         old = json.loads(old_json); old_score = old.get("score", 0); old_status = old.get("status")
         old_comments = old.get("commentCount", 0)
@@ -312,7 +325,7 @@ async def poll_post(valkey, limiter, url, url_name):
                             await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
                 await valkey.lpush("{discord_jobs}", json.dumps({"type": "status_change", "post": post, "old_status": old_status, "url": url}))
                 await valkey.set(f"notified_status:{pid}", status)
-                if author_id and status.lower() in ["complete", "completed", "available in future release"]:
+                if author_id and status.lower() in ["complete", "completed", "available in future release"] and await valkey.sismember("metrics:processed_posts", pid):
                     await valkey.zincrby("metrics:author_milestones", 1, author_id)
 
         milestones = [25, 50, 100]
@@ -338,19 +351,10 @@ async def poll_post(valkey, limiter, url, url_name):
                     await valkey.hset(f"post_indexer_info:{url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
             await valkey.lpush("{discord_jobs}", json.dumps({"type": "vote_progress", "post": post, "url": url}))
             await valkey.set(f"notified_milestone:{pid}", str(current_milestone_val))
-            if author_id:
+            if author_id and await valkey.sismember("metrics:processed_posts", pid):
                 new_passed = [m for m in milestones if score >= m and m > last_milestone_val]
                 await valkey.zincrby("metrics:author_milestones", len(new_passed), author_id)
     else:
-        if author_id:
-            await valkey.zincrby("metrics:author_posts", 1, author_id)
-            milestones_list = [25, 50, 100]
-            milestones_reached = len([m for m in milestones_list if score >= m])
-            if status.lower() in ["complete", "completed", "available in future release"]:
-                milestones_reached += 1
-            if milestones_reached > 0:
-                await valkey.zincrby("metrics:author_milestones", milestones_reached, author_id)
-
         await valkey.set(f"notified_status:{pid}", status)
         milestones_list = [25, 50, 100]
         current_milestone_val = max([m for m in milestones_list if score >= m] + [0])

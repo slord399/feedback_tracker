@@ -13,7 +13,7 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 
 ## Commands
 - `/stats`: View global and server-specific activity metrics.
-- `/metrics`: View top contributors and trending posts (Weekly/Monthly Trending, Top Authors, Milestone Masters).
+- `/metrics`: View top contributors and trending posts.
 - `/search`: Search Canny posts with interactive filters.
 - `/ping`: Check API and bot latencies.
 - `/credit`: Bot information and affiliation details.
@@ -22,16 +22,25 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 ### Administrative Commands
 *These commands require the **Manage Messages** permission.*
 
-- `/settings`: View current server configuration, including mode and target channels.
-- `/mode`: Toggle between **Global** (track everything) and **Local** (track only what you index) modes.
-- `/set_status_channel`: Select the channel where status updates and notifications will be posted.
-- `/react_channel`: Manage channels where the bot will automatically listen for and index Canny links (Add/Remove).
-- `/set_language`: Choose the preferred language for the bot's interface.
-- `/bulk_add`: Quickly index all Canny links found in a channel's recent history.
+- `/settings`: View current server configuration.
+- `/mode`: Toggle between **Global** and **Local** tracking.
+- `/set_status_channel`: Select where updates are posted (Supports Text, Threads, and News channels).
+- `/react_channel`: Manage auto-indexing channels (Supports Text, Threads, Forum, and News channels).
+- `/set_language`: Change the UI language.
+- `/bulk_add`: Index Canny links from channel history.
 
-## Context Menus
-- `Index this canny`: Quickly track a post by right-clicking a message containing a Canny link.
-- `Check canny status`: Instantly retrieve the current status, category, and votes for a post.
-- `Post what I indexed in hour`: Share a list of posts you've recently indexed.
-- `Check Trending Canny`: Interactive menu to view active feedback (Weekly/Monthly).
-- `Check Canny Author Metrics`: Interactive menu to view contributor rankings (Posts/Milestones).
+## Context Menus (User Apps)
+- `Index this canny`: Track a post from any message link.
+- `Check canny status`: Instant status/vote overview.
+- `Post what I indexed in hour`: Summary of your recent activity.
+- `Check Trending Canny`: View weekly/monthly trending feedback.
+- `Check Canny Author Metrics`: View top feedback authors.
+
+## Affiliation & Legal
+**This bot is an independent project and is not affiliated with VRChat Inc.**
+
+All data is sourced from the public VRChat Canny feedback portal. Use of this bot is subject to the [Terms of Service](Terms/tos.md) and [Privacy Policy](Terms/privacy.md).
+
+## Credits
+Hosted by [VRCβフォース](https://discord.gg/XJHRXwd).
+Open Source under the MIT License.
