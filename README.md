@@ -11,47 +11,8 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 - **Metrics & Insights**: Track trending feedback and recognize top contributors with detailed weekly and monthly analytics.
 - **Multi-lingual Support**: Fully localizable UI with support for 12+ languages.
 
-## Getting Started
-
-### Prerequisites
-- VPS or server with **Docker** and **Docker Compose** installed.
-- A Discord Bot Token (from the [Discord Developer Portal](https://discord.com/developers/applications)).
-- **Permissions**: The bot requires `Manage Messages` for administrative tasks and `Embed Links` for status updates.
-
-### Deployment
-1.  **Clone the Repository**:
-    ```bash
-    git clone https://github.com/slord399/feedback_tracker.git
-    cd feedback_tracker
-    ```
-2.  **Configure Environment**: Create a `.env` file in the root directory:
-    ```env
-    DISCORD_TOKEN=your_actual_discord_bot_token_here
-    ```
-3.  **Launch**: Run the deployment script:
-    ```bash
-    docker-compose up -d --build
-    ```
-
-## Architecture
-The system is built with a distributed, microservices-inspired architecture for high availability and scalability:
-
-- **Gateway**: Handles WebSocket connections to Discord, processes slash commands, and manages the command tree.
-- **Worker**: Processes outgoing messages and status updates from a priority queue. Handles rate limits and image embedding.
-- **Poller**: Recursively crawls Canny boards and individual posts to detect changes in votes, comments, or status.
-- **Valkey (Cache)**: Serves as the central state engine and message broker between all components.
-
-## Scaling
-The bot is designed to handle thousands of servers through horizontal scaling:
-
-- **Sharding**: Increase `TOTAL_SHARDS` in `docker-compose.yml` and add more gateway instances with unique `SHARD_ID` values to distribute server connections.
-- **Worker Clusters**: Add more worker services to increase the throughput of status updates across many guilds.
-- **Distributed Polling**: The poller uses Valkey locks to ensure boards are not redundantly crawled by multiple instances.
-
-## Localization
-Localization is managed via a [Google Sheet](https://docs.google.com/spreadsheets/d/17sYQbx154noc42UO1vvm3VVNLdnSguTb6j-J5mszvtQ/edit?usp=sharing).
-- **Update**: Administrators can run `/update_localization` to sync the latest strings to the bot.
-- **Add Languages**: New languages can be added by adding columns to the sheet and reloading.
+## Installation
+For detailed technical instructions on how to deploy, scale, and configure the bot, please refer to the [Installation & Architecture Guide](Bot/installation.md).
 
 ## Commands
 - `/stats`: View global and server-specific activity metrics.
