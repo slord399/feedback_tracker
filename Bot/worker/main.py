@@ -106,33 +106,44 @@ class Worker:
                         await self.valkey.sadd("indexed_post_urls", job["url"])
                         await self.valkey.hset(f"post_indexer_info:{job['url']}", mapping={"name": job["user_name"], "icon": job.get("user_icon") or "", "guild_id": str(gid)})
 
-                    await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
+                    if gid and cid:
+                        await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
+                        user_type = "requested" if is_already_indexed else "indexed"
 
-                    user_type = "requested" if is_already_indexed else "indexed"
-
-                    if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
-                    lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
-                    embed = create_canny_embed(post, user_info={"type": user_type, "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
-                    files = self.get_milestone_file(post)
-                    await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
+                        if job.get("original_message_id") and job.get("purge", True): await self.purge_message(job.get("original_channel_id", cid), job["original_message_id"], gid)
+                        lang = await self.valkey.hget(f"guild_config:{gid}", "language") or "English"
+                        embed = create_canny_embed(post, user_info={"type": user_type, "name": job["user_name"], "icon": job["user_icon"]}, lang=lang)
+                        files = self.get_milestone_file(post)
+                        await self.send_request("POST", f"/channels/{cid}/messages", {"embeds": [embed.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
 
                     if not is_already_indexed:
                         score = post.get("score", 0)
                         status = post.get("status", "open").lower()
-                        # Only broadcast to global mode if it meets criteria
-                        if score >= 25 or status != "open":
+                        # Broadcast rule: manual indexing always broadcasts, system discovery requires 25+ votes or non-Open
+                        is_manual = (job.get("user_id", 0) != 0)
+                        meets_criteria = (score >= 25 or status != "open")
+
+                        if is_manual or meets_criteria:
                             for oid in await get_active_guilds(self.valkey):
-                                if str(oid) == str(gid): continue
+                                if gid and str(oid) == str(gid): continue
                                 cfg = await self.valkey.hgetall(f"guild_config:{oid}")
                                 mode = cfg.get("mode", "global")
                                 if mode == "global" and cfg.get("status_channel"):
-                                    # Secondary check for suppression rules
+                                    # Secondary check for suppression rules (skip noise)
                                     if status == "closed" and score <= 1: continue
                                     if status == "needs more information" and score < 5: continue
 
                                     await self.valkey.sadd(f"guild_indexed_posts:{oid}", job["url"])
                                     olang = cfg.get("language", "English")
-                                    oemb = create_canny_embed(post, user_info={"type": "indexed", "name": "Indexed by Global Mode", "icon": None}, lang=olang)
+
+                                    # Mask indexing source unless it's a manual request from that guild (already handled in manual section)
+                                    u_name = job["user_name"]
+                                    u_icon = job.get("user_icon")
+                                    if u_name != "System Discovery":
+                                        u_name = "Indexed by Global Mode"
+                                        u_icon = None
+
+                                    oemb = create_canny_embed(post, user_info={"type": "indexed", "name": u_name, "icon": u_icon}, lang=olang)
                                     files = self.get_milestone_file(post)
                                     await self.send_request("POST", f"/channels/{cfg['status_channel']}/messages", {"embeds": [oemb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=olang))}, oid, files=files)
 
