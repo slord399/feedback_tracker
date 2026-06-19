@@ -856,7 +856,7 @@ async def mode(interaction: discord.Interaction, mode: app_commands.Choice[str])
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
-async def set_status_channel(interaction: discord.Interaction, channel: typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.NewsChannel]):
+async def set_status_channel(interaction: discord.Interaction, channel: typing.Union[discord.TextChannel, discord.Thread]):
     await bot.valkey.hset(f"guild_config:{interaction.guild_id}", "status_channel", str(channel.id))
     await register_guild(bot.valkey, interaction.guild)
     await interaction.response.send_message("Status channel set.")
@@ -870,7 +870,7 @@ async def set_status_channel(interaction: discord.Interaction, channel: typing.U
 @app_commands.allowed_contexts(guilds=True)
 @app_commands.allowed_installs(guilds=True)
 @app_commands.checks.has_permissions(manage_messages=True)
-async def react_channel(interaction: discord.Interaction, action: str, channel: typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel, discord.NewsChannel]):
+async def react_channel(interaction: discord.Interaction, action: str, channel: typing.Union[discord.TextChannel, discord.Thread, discord.ForumChannel]):
     if action == "add":
         await bot.valkey.sadd(f"guild_react_channels:{interaction.guild_id}", str(channel.id))
         await register_guild(bot.valkey, interaction.guild)
