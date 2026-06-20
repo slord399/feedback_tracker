@@ -4,11 +4,16 @@ A powerful, distributed Discord bot designed to keep your community informed abo
 
 ## Features
 - **Real-time Status Tracking**: Automatically receive updates when a Canny post's status changes or hits vote milestones.
+![status](Img/status.png)
 - **Global & Local Modes**: Choose whether to receive updates for all tracked posts globally or keep things focused on your server's interests.
 - **Deep Search**: Utilize an interactive search system with advanced filters (boards, status, votes, etc.) to find exactly what you're looking for.
+![search_1](Img/search_1.png)
+![search_2](Img/search_2.png)
+![search_3](Img/search_3.png)
 - **Adaptive Polling**: Intelligent polling logic ensures active posts are updated frequently while conserving resources for older content.
 - **User App Integration**: Convenient context menu commands allow users to interact with Canny links directly from any message.
 - **Metrics & Insights**: Track trending feedback and recognize top contributors with detailed weekly and monthly analytics.
+![trend](Img/trend_of_week.png)
 - **Multi-lingual Support**: Fully localizable UI with support for 12+ languages.
 
 ## Commands
