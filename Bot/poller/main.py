@@ -160,7 +160,13 @@ async def discover_boards(valkey, limiter):
     items = data.get("boards", {}).get("items", {})
     boards = []
     for k, v in items.items():
-        boards.append({"id": v.get("_id"), "name": v.get("name"), "urlName": v.get("urlName"), "url": f"https://feedback.vrchat.com/{v.get('urlName')}"})
+        boards.append({
+            "id": v.get("_id"),
+            "name": v.get("name"),
+            "urlName": v.get("urlName"),
+            "url": f"https://feedback.vrchat.com/{v.get('urlName')}",
+            "postCount": v.get("postCount", 0)
+        })
     if boards:
         await valkey.set("canny_boards", json.dumps(boards))
         logger.debug(f"Discovered {len(boards)} boards")
@@ -169,6 +175,8 @@ async def discover_boards(valkey, limiter):
 async def poll_board_recursive(valkey, limiter, board, force=False, progress_callback=None):
     total_indexed = 0
     sorts = ["newest", "score", "oldest"]
+    # Multi-dimensional approach to bypass 500-post limit by splitting into subsets
+    statuses = ["", "open", "planned", "in-progress", "complete", "closed"]
     logger.debug(f"Starting crawl for board {board['name']}")
 
     if not force:
@@ -177,49 +185,52 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
             logger.info(f"Skipping board {board['name']}, already crawled recently.")
             return total_indexed
 
-    for sort in sorts:
-        payload = {
-            "__canny_requestID": f"poller-crawl-{board['urlName']}-{sort}",
-            "__host": "feedback.vrchat.com",
-            "boardURLNames": [board["urlName"]],
-            "currentBoard": board["urlName"],
-            "pages": 50, # up to 500 posts per query
-            "sort": sort,
-            "status": "",
-        }
-        await limiter.acquire()
-        data = await fetch_canny_api("/api/posts/get", payload)
-        if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
-            err = data.get("error")
-            wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
-            logger.warning(f"{err.replace('_', ' ').capitalize()} during API crawl for {board['name']}. Sleeping for {wait//60} minutes.")
-            await asyncio.sleep(wait)
-            continue
-        if not data: continue
-
-        posts = extract_api_posts(data)
-        if not posts:
-            logger.warning(f"No posts found via API for board {board['name']} (sort={sort})")
-            continue
-
-        for p in posts:
-            uname = p.get("urlName")
-            if not uname: continue
-            pid = p.get("_id")
-            if not pid: continue
-
-            # Verify if this post was already processed in THIS crawl to avoid Canny's loop
-            if await valkey.exists(f"crawl_seen:{board['id']}:{pid}"):
+    for status in statuses:
+        for sort in sorts:
+            payload = {
+                "__canny_requestID": f"poller-crawl-{board['urlName']}-{status}-{sort}",
+                "__host": "feedback.vrchat.com",
+                "boardURLNames": [board["urlName"]],
+                "currentBoard": board["urlName"],
+                "pages": 50, # up to 500 posts per query
+                "sort": sort,
+                "status": status,
+            }
+            await limiter.acquire()
+            data = await fetch_canny_api("/api/posts/get", payload)
+            if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
+                err = data.get("error")
+                wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
+                logger.warning(f"{err.replace('_', ' ').capitalize()} during API crawl for {board['name']}. Sleeping for {wait//60} minutes.")
+                await asyncio.sleep(wait)
                 continue
-            await valkey.set(f"crawl_seen:{board['id']}:{pid}", "1", ex=300)
+            if not data: continue
 
-            p_url = f"https://feedback.vrchat.com/{board['urlName']}/p/{uname}"
-            await process_post_data(valkey, p, board, p_url, uname)
+            posts = extract_api_posts(data)
+            if not posts:
+                continue
 
-            total_indexed += 1
-            if total_indexed % 100 == 0:
-                logger.info(f"Board {board['name']} progress: {total_indexed} posts discovered...")
-            if progress_callback: await progress_callback(1)
+            for p in posts:
+                uname = p.get("urlName")
+                if not uname: continue
+                pid = p.get("_id")
+                if not pid: continue
+
+                # Check crawl_seen only within a single sort/status set to discover new posts,
+                # but process_post_data is idempotent for metrics.
+                # Actually, crawl_seen should be per-board-crawl to avoid loop issues
+                # but we want to count total_indexed uniquely per full board crawl.
+                if await valkey.exists(f"crawl_seen:{board['id']}:{pid}"):
+                    continue
+                await valkey.set(f"crawl_seen:{board['id']}:{pid}", "1", ex=3600)
+
+                p_url = f"https://feedback.vrchat.com/{board['urlName']}/p/{uname}"
+                await process_post_data(valkey, p, board, p_url, uname)
+
+                total_indexed += 1
+                if total_indexed % 100 == 0:
+                    logger.info(f"Board {board['name']} progress: {total_indexed} posts discovered...")
+                if progress_callback: await progress_callback(1)
 
     await valkey.set(f"last_board_crawl:{board['id']}", str(time.time()), ex=10800)
     await valkey.hset("stats:board_posts", board["name"], total_indexed)
