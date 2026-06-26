@@ -74,6 +74,34 @@ async def get_session():
         _session = aiohttp.ClientSession(headers=headers)
     return _session
 
+async def fetch_canny_api(endpoint_path: str, payload: dict):
+    """
+    Performs a POST request to Canny's API.
+    """
+    session = await get_session()
+    url = f"https://feedback.vrchat.com{endpoint_path}"
+    try:
+        async with session.post(url, json=payload) as response:
+            if response.status != 200:
+                if response.status == 429:
+                    logger.warning(f"Rate limited (429) POST {url}")
+                    return {"error": "rate_limit"}
+                if response.status >= 500:
+                    logger.error(f"Failed POST {url}, status: {response.status}")
+                    return {"error": "server_error"}
+                logger.error(f"Failed POST {url}, status: {response.status}")
+                return None
+            return await response.json()
+    except (asyncio.TimeoutError, aiohttp.ClientConnectorError) as e:
+        logger.warning(f"Timeout/Connection error POST {url}: {e}")
+        return {"error": "timeout"}
+    except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as e:
+        logger.warning(f"Payload/Disconnected error POST {url}: {e}")
+        return {"error": "server_error"}
+    except Exception as e:
+        logger.info(f"POST error {url}: {e}")
+    return None
+
 async def fetch_canny_data(url: str, retry_fallback=True):
     """
     Fetches a Canny URL and extracts the JSON data from window.Canny or window.__REDUX_STATE__ or window.__data
@@ -178,6 +206,17 @@ def extract_board_posts(data):
                     all_posts.append(p)
                     seen_ids.add(pid)
     return all_posts
+
+def extract_api_posts(data):
+    """
+    Extracts posts from a Canny API response.
+    """
+    if not data or not isinstance(data, dict):
+        return []
+    result = data.get("result", {})
+    if not isinstance(result, dict):
+        return []
+    return result.get("posts", [])
 
 async def archive_url(url: str):
     """
