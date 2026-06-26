@@ -802,15 +802,26 @@ async def stats(interaction: discord.Interaction):
     vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0
 
     board_stats = await bot.valkey.hgetall("stats:board_posts")
+    canny_boards_json = await bot.valkey.get("canny_boards")
+    board_metadata = {}
+    if canny_boards_json:
+        boards_list = json.loads(canny_boards_json)
+        board_metadata = {b["name"]: b.get("postCount", 0) for b in boards_list}
+
     tot = 0
     board_str = ""
     if board_stats:
         board_str = "\n\n**Discovered Posts by Board:**\n"
-        sorted_boards = sorted(board_stats.items(), key=lambda x: int(x[1]), reverse=True)
+        # Sort A-Z by board name as requested
+        sorted_boards = sorted(board_stats.items(), key=lambda x: x[0].lower())
         for b, count in sorted_boards:
             c = int(count)
             tot += c
-            board_str += f"- {b}: {c:,}\n"
+            total_on_canny = board_metadata.get(b, 0)
+            if total_on_canny:
+                board_str += f"- {b}: {c:,} / {total_on_canny:,}\n"
+            else:
+                board_str += f"- {b}: {c:,}\n"
 
     msg = f"**Canny Bot Stats**\nDiscovered Posts: {tot:,}\nTracked Posts: {idx:,}\nActive Polling Queue: {int(polled):,}\n\n**Activity ({this_month})**\nStatus Updates: {int(status_changes):,}\nVote Milestones: {int(vote_reports):,}{board_str}"
     await interaction.followup.send(msg)
