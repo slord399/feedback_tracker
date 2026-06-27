@@ -727,7 +727,7 @@ class MyBot(commands.Bot):
                 boards_list = json.loads(boards_json)
                 board_map = {b["urlName"]: b for b in boards_list}
 
-            try: await interaction.channel.send(f"Comparison complete. Found {total_gh} posts in GitHub. {total_gh - total_missing} already indexed. {total_missing} missing. Starting indexing for missing posts...")
+            try: await interaction.channel.send(f"Comparison complete. Found {total_gh:,} posts in GitHub. {total_gh - total_missing:,} already indexed. {total_missing:,} missing. Starting indexing for missing posts...")
             except: pass
 
             added = 0
@@ -756,14 +756,19 @@ class MyBot(commands.Bot):
 
                 processed += 1
                 if processed % 500 == 0:
-                    try: await interaction.channel.send(f"Indexing progress: {processed}/{total_missing} processed...")
+                    try: await interaction.channel.send(f"Indexing progress: {processed:,}/{total_missing:,} processed...")
                     except: pass
 
-            summary = f"**Comparison Summary**\nTotal in GitHub: {total_gh}\nAlready Indexed: {total_gh - total_missing}\nMissing found: {total_missing}\nSuccessfully Added: {added}\n"
+                if processed % 1000 == 0 and processed < total_missing:
+                    try: await interaction.channel.send(f"Processed {processed:,} posts. Taking a 30-minute break to avoid overwhelming Canny...")
+                    except: pass
+                    await asyncio.sleep(1800)
+
+            summary = f"**Comparison Summary**\nTotal in GitHub: {total_gh:,}\nAlready Indexed: {total_gh - total_missing:,}\nMissing found: {total_missing:,}\nSuccessfully Added: {added:,}\n"
             if failed:
                 summary += "\n**Failures:**\n"
                 for reason, count in failed.items():
-                    summary += f"- {reason}: {count}\n"
+                    summary += f"- {reason}: {count:,}\n"
 
             try: await interaction.channel.send(summary)
             except: pass
