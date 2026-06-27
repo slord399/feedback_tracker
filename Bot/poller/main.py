@@ -15,8 +15,9 @@ class VoiceFilter(logging.Filter):
 logging.getLogger('discord.client').addFilter(VoiceFilter())
 logging.getLogger('discord.gateway').addFilter(VoiceFilter())
 
+import valkey
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from Bot.shared.valkey import get_valkey_client
+from Bot.shared.valkey import get_valkey_client, refresh_valkey_cluster
 from Bot.shared.canny import fetch_canny_data, fetch_canny_api, extract_post_from_data, extract_board_posts, extract_api_posts
 from Bot.shared.rate_limit import get_global_limiter
 
@@ -356,6 +357,10 @@ async def poller_loop():
                                 logger.warning(f"Stopped polling {url} after {fail_count} failures")
                             else:
                                 await valkey.set(key, time.time() + 3600)
+        except (valkey.exceptions.DataError, valkey.exceptions.ClusterError):
+            logger.warning("Valkey cluster map error detected in poller, refreshing...")
+            await refresh_valkey_cluster(valkey)
+            await asyncio.sleep(1)
         except Exception:
             logger.exception("Poller loop error")
         await asyncio.sleep(60)

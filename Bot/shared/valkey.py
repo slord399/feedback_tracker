@@ -44,3 +44,16 @@ async def get_all_guilds(valkey):
     gids = await valkey.smembers("active_guilds")
     names = await valkey.hgetall("guild_names")
     return [{"id": gid, "name": names.get(gid, "Unknown Server")} for gid in gids]
+
+async def refresh_valkey_cluster(valkey_client):
+    """
+    Forces a re-initialization of the cluster map to clear bad states and
+    update node information.
+    """
+    try:
+        if hasattr(valkey_client, 'nodes_manager'):
+            await valkey_client.nodes_manager.initialize()
+            return True
+    except Exception:
+        pass
+    return False
