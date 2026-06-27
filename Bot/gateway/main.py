@@ -466,6 +466,26 @@ class MyBot(commands.Bot):
                 await self.valkey.delete("metrics:author_posts", "metrics:author_milestones", "metrics:processed_posts")
                 await self.valkey.set("metrics:migration_v2_done", "1")
 
+            if not await self.valkey.get("metrics:migration_v3_done"):
+                logger.info("Performing discovered posts per board migration...")
+                await self.valkey.delete("stats:discovered_posts_per_board")
+                cursor = 0
+                counts = {}
+                while True:
+                    cursor, data = await self.valkey.hscan("canny_search_index", cursor=cursor, count=1000)
+                    for k, v in data.items():
+                        try:
+                            p = json.loads(v)
+                            board = p.get("board")
+                            if board:
+                                counts[board] = counts.get(board, 0) + 1
+                        except Exception as e:
+                            logger.error(f"Error migrating post data for {k}: {e}")
+                    if cursor == 0: break
+                if counts:
+                    await self.valkey.hset("stats:discovered_posts_per_board", mapping=counts)
+                await self.valkey.set("metrics:migration_v3_done", "1")
+
         ADMIN_GUILD = discord.Object(id=590756888254349315)
 
         cmd_force = app_commands.Command(name="force_polling", description="Force polling of all Canny posts", callback=self.force_polling)
@@ -514,8 +534,8 @@ class MyBot(commands.Bot):
     async def update_activity(self):
         try:
             idx = await self.valkey.scard("indexed_post_urls")
-            # Calculate total discovered posts from stats:board_posts
-            board_stats = await self.valkey.hgetall("stats:board_posts")
+            # Use persistent board stats
+            board_stats = await self.valkey.hgetall("stats:discovered_posts_per_board")
             tot = sum(int(c) for c in board_stats.values()) if board_stats else await self.valkey.hlen("canny_search_index")
 
             activity = discord.Activity(
@@ -667,7 +687,11 @@ class MyBot(commands.Bot):
         msg = self.localizer.get("select_metric_msg", lang)
         await interaction.response.send_message(msg, view=MetricsSelectionView(self, "authors", interaction, lang=lang), ephemeral=False)
 
-    async def compare_diff(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        repo="GitHub repository to compare with (default: Hackebein/feedback.vrchat.com)",
+        branch="GitHub branch to use (default: main)"
+    )
+    async def compare_diff(self, interaction: discord.Interaction, repo: str = "Hackebein/feedback.vrchat.com", branch: str = "main"):
         if interaction.guild_id != 590756888254349315:
             return await interaction.response.send_message("No permission.", ephemeral=True)
         if not interaction.user.guild_permissions.manage_messages:
@@ -677,16 +701,16 @@ class MyBot(commands.Bot):
         if interaction.guild_id:
             lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
 
-        await interaction.response.send_message("Starting comparison with GitHub data...")
-        self.loop.create_task(self.do_compare_diff(interaction, lang))
+        await interaction.response.send_message(f"Starting comparison with GitHub data from {repo} ({branch})...")
+        self.loop.create_task(self.do_compare_diff(interaction, lang, repo, branch))
 
-    async def do_compare_diff(self, interaction, lang):
+    async def do_compare_diff(self, interaction, lang, repo, branch):
         try:
             valkey = self.valkey
             limiter = get_global_limiter(valkey)
 
             # Fetch GitHub tree
-            tree_url = "https://api.github.com/repos/Hackebein/feedback.vrchat.com/git/trees/main?recursive=1"
+            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{branch}?recursive=1"
             async with aiohttp.ClientSession() as session:
                 async with session.get(tree_url) as resp:
                     if resp.status != 200:
@@ -931,7 +955,7 @@ async def stats(interaction: discord.Interaction):
     status_changes = await bot.valkey.get(f"stats:status_change:{this_month}") or 0
     vote_reports = await bot.valkey.get(f"stats:vote_progress:{this_month}") or 0
 
-    board_stats = await bot.valkey.hgetall("stats:board_posts")
+    board_stats = await bot.valkey.hgetall("stats:discovered_posts_per_board")
     canny_boards_json = await bot.valkey.get("canny_boards")
     board_metadata = {}
     if canny_boards_json:
