@@ -5,8 +5,8 @@ import os
 import sys
 import aiohttp
 import discord
-import redis
-import redis.asyncio as redis_async
+import valkey
+import valkey.asyncio as valkey_async
 discord.VoiceClient.warn_nacl = False
 
 class VoiceFilter(logging.Filter):
@@ -200,7 +200,7 @@ class Worker:
                                 emb = create_canny_embed(post, old_status=job.get("old_status"), user_info=user_info, lang=lang)
                                 files = self.get_milestone_file(post)
                                 await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
-            except (redis.exceptions.TimeoutError, asyncio.TimeoutError): continue
+            except (valkey.exceptions.TimeoutError, asyncio.TimeoutError): continue
             except Exception: logger.exception("Worker error")
 
     def view_to_components(self, view):

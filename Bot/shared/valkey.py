@@ -1,5 +1,5 @@
 import os
-from redis.asyncio.cluster import RedisCluster, ClusterNode
+from valkey.asyncio.cluster import ValkeyCluster, ClusterNode
 
 _valkey_instance = None
 
@@ -22,7 +22,7 @@ def get_valkey_client():
             host, port = node.split(":")
             startup_nodes.append(ClusterNode(host, int(port)))
 
-    _valkey_instance = RedisCluster(
+    _valkey_instance = ValkeyCluster(
         startup_nodes=startup_nodes,
         decode_responses=True,
         socket_timeout=10,
