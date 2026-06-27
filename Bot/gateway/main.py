@@ -16,8 +16,9 @@ logging.getLogger('discord.gateway').addFilter(VoiceFilter())
 from discord import app_commands, ui
 from discord.ext import commands, tasks
 
+import valkey
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from Bot.shared.valkey import get_valkey_client, register_guild, get_all_guilds
+from Bot.shared.valkey import get_valkey_client, register_guild, get_all_guilds, refresh_valkey_cluster
 from Bot.shared.localization import get_localizer
 from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts, extract_canny_urls, extract_post_url_name
 from Bot.shared.rate_limit import get_global_limiter
@@ -525,6 +526,9 @@ class MyBot(commands.Bot):
                 party={'id': 'canny', 'size': [int(idx), int(tot)]}
             )
             await self.change_presence(activity=activity)
+        except (valkey.exceptions.DataError, valkey.exceptions.ClusterError):
+            logger.warning("Valkey cluster map error in update_activity, refreshing...")
+            await refresh_valkey_cluster(self.valkey)
         except Exception:
             pass
 

@@ -20,7 +20,7 @@ logging.getLogger('discord.gateway').addFilter(VoiceFilter())
 import time
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from Bot.shared.valkey import get_valkey_client, get_active_guilds
+from Bot.shared.valkey import get_valkey_client, get_active_guilds, refresh_valkey_cluster
 from Bot.shared.rate_limit import get_global_limiter, get_guild_limiter
 from Bot.worker.embeds import create_canny_embed, create_canny_view
 from Bot.shared.canny import fetch_canny_data, extract_post_from_data, archive_url, extract_post_url_name
@@ -201,6 +201,10 @@ class Worker:
                                 files = self.get_milestone_file(post)
                                 await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
             except (valkey.exceptions.TimeoutError, asyncio.TimeoutError): continue
+            except (valkey.exceptions.DataError, valkey.exceptions.ClusterError):
+                logger.warning("Valkey cluster map error detected, refreshing...")
+                await refresh_valkey_cluster(self.valkey)
+                await asyncio.sleep(1)
             except Exception: logger.exception("Worker error")
 
     def view_to_components(self, view):
