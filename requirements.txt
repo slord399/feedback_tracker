@@ -1,4 +1,4 @@
-redis
+valkey
 beautifulsoup4
 aiohttp
 hiredis
