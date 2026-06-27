@@ -688,10 +688,10 @@ class MyBot(commands.Bot):
         await interaction.response.send_message(msg, view=MetricsSelectionView(self, "authors", interaction, lang=lang), ephemeral=False)
 
     @app_commands.describe(
-        repo="GitHub repository to compare with (default: Hackebein/feedback.vrchat.com)",
+        repo="GitHub repository to compare with (e.g. Hackebein/feedback.vrchat.com)",
         branch="GitHub branch to use (default: main)"
     )
-    async def compare_diff(self, interaction: discord.Interaction, repo: str = "Hackebein/feedback.vrchat.com", branch: str = "main"):
+    async def compare_diff(self, interaction: discord.Interaction, repo: str, branch: str = "main"):
         if interaction.guild_id != 590756888254349315:
             return await interaction.response.send_message("No permission.", ephemeral=True)
         if not interaction.user.guild_permissions.manage_messages:
