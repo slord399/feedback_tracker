@@ -138,6 +138,18 @@ async def process_post_data(valkey, post, board_info, p_url, uname, force_notify
         await valkey.set(f"next_poll:{p_url}", time.time() + get_polling_interval(post))
         await valkey.incr("stats:polling_queue_size")
 
+    # Maintain persistent board counts
+    existing_entry = await valkey.hget("canny_search_index", uname)
+    if existing_entry:
+        old_data = json.loads(existing_entry)
+        old_board = old_data.get("board")
+        if old_board != board_info["name"]:
+            if old_board:
+                await valkey.hincrby("stats:discovered_posts_per_board", old_board, -1)
+            await valkey.hincrby("stats:discovered_posts_per_board", board_info["name"], 1)
+    else:
+        await valkey.hincrby("stats:discovered_posts_per_board", board_info["name"], 1)
+
     await valkey.hset("canny_search_index", uname, json.dumps({
         "title": title, "details": details, "url": p_url,
         "score": score, "status": status, "comments": comments,
@@ -354,7 +366,18 @@ async def poller_loop():
                                 await valkey.delete(key)
                                 await valkey.decr("stats:polling_queue_size")
                                 await valkey.srem("indexed_post_urls", url)
-                                logger.warning(f"Stopped polling {url} after {fail_count} failures")
+                                await valkey.delete(f"poll_fail_count:{url}")
+
+                                # Clean up search index and board counts
+                                entry = await valkey.hget("canny_search_index", name)
+                                if entry:
+                                    p_data = json.loads(entry)
+                                    board_name = p_data.get("board")
+                                    if board_name:
+                                        await valkey.hincrby("stats:discovered_posts_per_board", board_name, -1)
+                                    await valkey.hdel("canny_search_index", name)
+
+                                logger.warning(f"Stopped polling and removed {url} after {fail_count} failures")
                             else:
                                 await valkey.set(key, time.time() + 3600)
         except (valkey.exceptions.DataError, valkey.exceptions.ClusterError):
