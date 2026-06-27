@@ -300,8 +300,14 @@ async def poller_loop():
     logger.info("Poller started")
     valkey = get_valkey_client(); limiter = get_global_limiter(valkey)
     boards = await discover_boards(valkey, limiter)
-    for b in boards:
-        asyncio.create_task(poll_board_recursive(valkey, limiter, b, force=True))
+
+    # Run initial crawls and wait for them to finish
+    if boards:
+        logger.info(f"Starting initial crawl for {len(boards)} boards...")
+        tasks = [poll_board_recursive(valkey, limiter, b, force=True) for b in boards]
+        await asyncio.gather(*tasks)
+        logger.info("Initial crawl complete. Signaling gateway for status update.")
+        await valkey.publish("bot:update_activity", "initial_polling_done")
 
     while True:
         try:
