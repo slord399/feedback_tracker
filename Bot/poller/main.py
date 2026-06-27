@@ -32,11 +32,11 @@ async def process_post_data(valkey, post, board_info, p_url, uname, force_notify
         return None
 
     title = post.get("title") or uname
-    score = post.get("score", 0)
-    status = post.get("status", "open")
-    details = post.get("details", "")
-    comments = post.get("commentCount", 0)
-    created_iso = post.get("created", "")
+    score = post.get("score") or 0
+    status = post.get("status") or "open"
+    details = post.get("details") or ""
+    comments = post.get("commentCount") or 0
+    created_iso = post.get("created") or ""
     created_ts = 0
     try:
         dt = datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
@@ -45,7 +45,7 @@ async def process_post_data(valkey, post, board_info, p_url, uname, force_notify
         pass
 
     old_json = await valkey.get(f"post_cache:{pid}")
-    author = post.get("author", {})
+    author = post.get("author") or {}
     author_id = author.get("_id")
     just_processed = False
 
