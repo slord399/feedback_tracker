@@ -21,7 +21,7 @@ from Bot.shared.valkey import get_valkey_client, register_guild, get_all_guilds
 from Bot.shared.localization import get_localizer
 from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts, extract_canny_urls, extract_post_url_name
 from Bot.shared.rate_limit import get_global_limiter
-from Bot.poller.main import discover_boards, poll_board_recursive
+from Bot.poller.main import discover_boards, poll_board_recursive, process_post_data
 from Bot.worker.embeds import create_canny_embed, create_canny_view
 
 logging.basicConfig(level=logging.INFO)
@@ -465,9 +465,17 @@ class MyBot(commands.Bot):
                 await self.valkey.delete("metrics:author_posts", "metrics:author_milestones", "metrics:processed_posts")
                 await self.valkey.set("metrics:migration_v2_done", "1")
 
+        ADMIN_GUILD = discord.Object(id=590756888254349315)
+
         cmd_force = app_commands.Command(name="force_polling", description="Force polling of all Canny posts", callback=self.force_polling)
-        cmd_force.guild_only = True
-        self.tree.add_command(cmd_force)
+        self.tree.add_command(cmd_force, guild=ADMIN_GUILD)
+
+        cmd_compare = app_commands.Command(name="compare-diff", description="Compare Canny posts with GitHub data", callback=self.compare_diff)
+        self.tree.add_command(cmd_compare, guild=ADMIN_GUILD)
+
+        cmd_update_loc = app_commands.Command(name="update_localization", description="Sync localization from Google Sheet", callback=self.update_localization_command)
+        self.tree.add_command(cmd_update_loc, guild=ADMIN_GUILD)
+
         cmd_index = app_commands.ContextMenu(name="Index this canny", callback=self.index_this_canny)
         cmd_index.allowed_contexts = USER_APP_CONTEXTS
         cmd_index.allowed_installs = USER_APP_INSTALLS
@@ -495,6 +503,7 @@ class MyBot(commands.Bot):
 
         if self.shard_id is None or self.shard_id == 0:
             await self.tree.sync()
+            await self.tree.sync(guild=ADMIN_GUILD)
             self.auto_sync_localization.start()
             asyncio.create_task(self.sync_localization())
         self.update_activity.start()
@@ -654,6 +663,112 @@ class MyBot(commands.Bot):
         msg = self.localizer.get("select_metric_msg", lang)
         await interaction.response.send_message(msg, view=MetricsSelectionView(self, "authors", interaction, lang=lang), ephemeral=False)
 
+    async def compare_diff(self, interaction: discord.Interaction):
+        if interaction.guild_id != 590756888254349315:
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+        if not interaction.user.guild_permissions.manage_messages:
+            return await interaction.response.send_message("Missing 'Manage Messages' permission.", ephemeral=True)
+
+        lang = "English"
+        if interaction.guild_id:
+            lang = await self.valkey.hget(f"guild_config:{interaction.guild_id}", "language") or "English"
+
+        await interaction.response.send_message("Starting comparison with GitHub data...")
+        self.loop.create_task(self.do_compare_diff(interaction, lang))
+
+    async def do_compare_diff(self, interaction, lang):
+        try:
+            valkey = self.valkey
+            limiter = get_global_limiter(valkey)
+
+            # Fetch GitHub tree
+            tree_url = "https://api.github.com/repos/Hackebein/feedback.vrchat.com/git/trees/main?recursive=1"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(tree_url) as resp:
+                    if resp.status != 200:
+                        try: await interaction.channel.send(f"Failed to fetch GitHub tree: HTTP {resp.status}")
+                        except: pass
+                        return
+                    tree_data = await resp.json()
+
+            # Parse posts from GitHub
+            gh_posts = [] # list of (board_slug, post_slug)
+            for item in tree_data.get("tree", []):
+                path = item.get("path", "")
+                if path.startswith("boards/") and path.endswith(".json"):
+                    parts = path.split("/")
+                    if len(parts) == 3:
+                        board_slug = parts[1]
+                        post_slug = parts[2][:-5] # remove .json
+                        gh_posts.append((board_slug, post_slug))
+
+            total_gh = len(gh_posts)
+            if total_gh == 0:
+                try: await interaction.channel.send("No posts found in GitHub repository.")
+                except: pass
+                return
+
+            # Get existing posts from Valkey
+            existing_slugs = await valkey.hkeys("canny_search_index")
+            existing_set = set(existing_slugs)
+
+            # Identify missing
+            missing = [p for p in gh_posts if p[1] not in existing_set]
+            total_missing = len(missing)
+
+            # Get board info for metadata
+            boards_json = await valkey.get("canny_boards")
+            board_map = {}
+            if boards_json:
+                boards_list = json.loads(boards_json)
+                board_map = {b["urlName"]: b for b in boards_list}
+
+            try: await interaction.channel.send(f"Comparison complete. Found {total_gh} posts in GitHub. {total_gh - total_missing} already indexed. {total_missing} missing. Starting indexing for missing posts...")
+            except: pass
+
+            added = 0
+            failed = {} # reason -> count
+            processed = 0
+
+            for board_slug, post_slug in missing:
+                url = f"https://feedback.vrchat.com/{board_slug}/p/{post_slug}"
+                await limiter.acquire()
+                data = await fetch_canny_data(url)
+
+                if not data or (isinstance(data, dict) and "error" in data):
+                    reason = data.get("error") if (data and isinstance(data, dict)) else "not_found_or_error"
+                    failed[reason] = failed.get(reason, 0) + 1
+                else:
+                    post = extract_post_from_data(data, post_slug)
+                    if not post:
+                        failed["post_not_found_in_data"] = failed.get("post_not_found_in_data", 0) + 1
+                    else:
+                        board_info = board_map.get(board_slug)
+                        if not board_info:
+                            board_info = {"name": board_slug.replace("-", " ").title(), "urlName": board_slug}
+
+                        await process_post_data(valkey, post, board_info, url, post_slug)
+                        added += 1
+
+                processed += 1
+                if processed % 500 == 0:
+                    try: await interaction.channel.send(f"Indexing progress: {processed}/{total_missing} processed...")
+                    except: pass
+
+            summary = f"**Comparison Summary**\nTotal in GitHub: {total_gh}\nAlready Indexed: {total_gh - total_missing}\nMissing found: {total_missing}\nSuccessfully Added: {added}\n"
+            if failed:
+                summary += "\n**Failures:**\n"
+                for reason, count in failed.items():
+                    summary += f"- {reason}: {count}\n"
+
+            try: await interaction.channel.send(summary)
+            except: pass
+
+        except Exception:
+            logger.exception("Error in do_compare_diff")
+            try: await interaction.channel.send("An error occurred during comparison. Check logs for details.")
+            except: pass
+
     async def _send_metrics(self, interaction: discord.Interaction, category: str, deferred: bool = False):
         if not deferred:
             await interaction.response.defer(ephemeral=False)
@@ -712,6 +827,12 @@ class MyBot(commands.Bot):
 
         await interaction.response.send_message(self.localizer.get("polling_started", lang))
         self.loop.create_task(self.do_force_polling(interaction, lang))
+
+    async def update_localization_command(self, interaction: discord.Interaction):
+        if interaction.guild_id != 590756888254349315:
+            return await interaction.response.send_message("No permission.", ephemeral=True)
+        success = await self.sync_localization()
+        await interaction.response.send_message("Updated." if success else "Failed.")
 
     async def do_force_polling(self, interaction, lang):
         try:
@@ -926,15 +1047,6 @@ async def set_language(interaction: discord.Interaction):
     view = ui.View()
     view.add_item(LanguageSelect(bot.valkey))
     await interaction.response.send_message("Select language:", view=view, ephemeral=True)
-
-@bot.tree.command(name="update_localization", description="Sync localization from Google Sheet")
-@app_commands.allowed_contexts(guilds=True)
-@app_commands.allowed_installs(guilds=True)
-async def update_localization(interaction: discord.Interaction):
-    if interaction.guild_id != 590756888254349315:
-        return await interaction.response.send_message("No permission.")
-    success = await bot.sync_localization()
-    await interaction.response.send_message("Updated." if success else "Failed.")
 
 @bot.tree.command(name="test_feed", description="Test embed rendering")
 @app_commands.allowed_contexts(guilds=True)
