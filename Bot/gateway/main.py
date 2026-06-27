@@ -453,11 +453,25 @@ class MyBot(commands.Bot):
                 logger.info(f"Redundant close interaction received: {interaction.id}")
                 await universal_close_callback(interaction)
 
+    async def listen_for_updates(self):
+        """Listens for update signals from the poller to refresh status immediately."""
+        try:
+            pubsub = self.valkey.pubsub()
+            await pubsub.subscribe("bot:update_activity")
+            logger.info("Listening for activity update signals...")
+            async for message in pubsub.listen():
+                if message['type'] == 'message':
+                    logger.info(f"Received activity update signal: {message['data']}")
+                    await self.update_activity()
+        except Exception:
+            logger.exception("Error in listen_for_updates")
+
     async def setup_hook(self):
         self.add_view(PersistentCloseView())
         self.add_listener(self.handle_close_interaction, "on_interaction")
         logger.info(f"Setting up Shard {self.shard_id} with persistent close view.")
         self.loop.create_task(self.sync_guilds_to_valkey())
+        self.loop.create_task(self.listen_for_updates())
 
         # Migration: Reset author metrics to be accurately rebuilt by the new poller logic
         if self.shard_id is None or self.shard_id == 0:
@@ -897,6 +911,7 @@ class MyBot(commands.Bot):
                 summary += f"- **{name}**: {int(count):,}\n"
             try: await interaction.channel.send(summary)
             except: pass
+            await self.update_activity()
         except Exception:
             logger.exception("Error in do_force_polling")
             try: await interaction.channel.send("An error occurred during force polling. Check logs for details.")
