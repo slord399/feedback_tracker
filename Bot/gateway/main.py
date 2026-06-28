@@ -702,7 +702,7 @@ class MyBot(commands.Bot):
         await interaction.response.send_message(msg, view=MetricsSelectionView(self, "authors", interaction, lang=lang), ephemeral=False)
 
     @app_commands.describe(
-        repo="GitHub repository to compare with (e.g. Hackebein/feedback.vrchat.com)",
+        repo="GitHub repository to compare with (e.g. slord399/feedback_tracker)",
         branch="GitHub branch to use (default: main)"
     )
     async def compare_diff(self, interaction: discord.Interaction, repo: str, branch: str = "main"):
