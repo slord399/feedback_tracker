@@ -18,7 +18,7 @@ from discord.ext import commands, tasks
 
 import valkey
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from Bot.shared.valkey import get_valkey_client, register_guild, get_all_guilds, refresh_valkey_cluster
+from Bot.shared.valkey import get_valkey_client, get_valkey_pubsub_client, register_guild, get_all_guilds, refresh_valkey_cluster
 from Bot.shared.localization import get_localizer
 from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts, extract_canny_urls, extract_post_url_name
 from Bot.shared.rate_limit import get_global_limiter
@@ -455,16 +455,26 @@ class MyBot(commands.Bot):
 
     async def listen_for_updates(self):
         """Listens for update signals from the poller to refresh status immediately."""
-        try:
-            pubsub = self.valkey.pubsub()
-            await pubsub.subscribe("bot:update_activity")
-            logger.info("Listening for activity update signals...")
-            async for message in pubsub.listen():
-                if message['type'] == 'message':
-                    logger.info(f"Received activity update signal: {message['data']}")
-                    await self.update_activity()
-        except Exception:
-            logger.exception("Error in listen_for_updates")
+        backoff = 1
+        while True:
+            try:
+                # Use dedicated Pub/Sub client as ValkeyCluster doesn't support it yet
+                client = get_valkey_pubsub_client()
+                pubsub = client.pubsub()
+                await pubsub.subscribe("bot:update_activity")
+                logger.info("Listening for activity update signals...")
+                backoff = 1 # Reset backoff on success
+                async for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        logger.info(f"Received activity update signal: {message['data']}")
+                        await self.update_activity()
+            except (valkey.exceptions.ConnectionError, valkey.exceptions.TimeoutError, valkey.exceptions.ClusterError):
+                logger.warning(f"Pub/Sub connection lost, retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+            except Exception:
+                logger.exception("Error in listen_for_updates")
+                await asyncio.sleep(5)
 
     async def setup_hook(self):
         self.add_view(PersistentCloseView())

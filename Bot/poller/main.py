@@ -307,7 +307,7 @@ async def poller_loop():
         tasks = [poll_board_recursive(valkey, limiter, b, force=True) for b in boards]
         await asyncio.gather(*tasks)
         logger.info("Initial crawl complete. Signaling gateway for status update.")
-        await valkey.publish("bot:update_activity", "initial_polling_done")
+        await valkey.execute_command("PUBLISH", "bot:update_activity", "initial_polling_done")
 
     while True:
         try:
