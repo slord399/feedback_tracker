@@ -4,6 +4,7 @@ import json
 from bs4 import BeautifulSoup
 import logging
 import re
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +46,16 @@ def extract_canny_urls(message):
     canny_urls = []
     seen = set()
     for u in urls:
-        if ("canny.io" in u or "feedback.vrchat.com" in u) and u not in seen:
-            canny_urls.append(u)
-            seen.add(u)
+        if u in seen:
+            continue
+        try:
+            parsed = urlparse(u)
+            hostname = (parsed.hostname or "").lower()
+            if hostname == "feedback.vrchat.com" or hostname == "canny.io" or hostname.endswith(".canny.io"):
+                canny_urls.append(u)
+                seen.add(u)
+        except Exception:
+            continue
 
     if canny_urls:
         logger.info(f"Found {len(canny_urls)} Canny URLs in message {message.id}")
