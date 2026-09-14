@@ -8,6 +8,24 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+def parse_github_repo(repo_str: str) -> str:
+    """
+    Parses a GitHub repository input string into 'owner/repo' format.
+    Handles full URLs (e.g., https://github.com/owner/repo), trailing .git,
+    trailing slashes, and leading/trailing whitespace.
+    """
+    if not repo_str:
+        return ""
+    repo_str = repo_str.strip()
+    # Strip protocol and github.com domain if present
+    repo_str = re.sub(r'^(https?://)?(www\.)?github\.com/', '', repo_str)
+    # Strip trailing .git, .git/, or trailing slashes
+    repo_str = re.sub(r'\.git/?$', '', repo_str).strip('/')
+    parts = [p for p in repo_str.split('/') if p]
+    if len(parts) >= 2:
+        return f"{parts[0]}/{parts[1]}"
+    return ""
+
 def clean_url(url):
     """
     Strips trailing punctuation and markdown characters from a URL.
