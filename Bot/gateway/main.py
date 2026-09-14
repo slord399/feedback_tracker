@@ -20,7 +20,7 @@ import valkey
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from Bot.shared.valkey import get_valkey_client, get_valkey_pubsub_client, register_guild, get_all_guilds, refresh_valkey_cluster
 from Bot.shared.localization import get_localizer
-from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts, extract_canny_urls, extract_post_url_name
+from Bot.shared.canny import fetch_canny_data, extract_post_from_data, extract_board_posts, extract_canny_urls, extract_post_url_name, parse_github_repo
 from Bot.shared.rate_limit import get_global_limiter
 from Bot.poller.main import discover_boards, poll_board_recursive, process_post_data
 from Bot.worker.embeds import create_canny_embed, create_canny_view
@@ -733,15 +733,42 @@ class MyBot(commands.Bot):
             valkey = self.valkey
             limiter = get_global_limiter(valkey)
 
+            clean_repo = parse_github_repo(repo)
+            if not clean_repo:
+                try: await interaction.channel.send("Invalid GitHub repository format.")
+                except: pass
+                return
+
+            headers = {
+                "User-Agent": "VRChatCannyBot/1.0",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            token = os.getenv("GITHUB_TOKEN")
+            if token:
+                headers["Authorization"] = f"token {token}"
+
             # Fetch GitHub tree
-            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{branch}?recursive=1"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(tree_url) as resp:
-                    if resp.status != 200:
-                        try: await interaction.channel.send(f"Failed to fetch GitHub tree: HTTP {resp.status}")
-                        except: pass
-                        return
-                    tree_data = await resp.json()
+            async with aiohttp.ClientSession(headers=headers) as session:
+                branches_to_try = [branch]
+                if branch in ("main", "master"):
+                    branches_to_try.append("master" if branch == "main" else "main")
+
+                tree_data = None
+                last_status = None
+
+                for target_branch in branches_to_try:
+                    tree_url = f"https://api.github.com/repos/{clean_repo}/git/trees/{target_branch}?recursive=1"
+                    async with session.get(tree_url) as resp:
+                        last_status = resp.status
+                        if resp.status == 200:
+                            tree_data = await resp.json()
+                            branch = target_branch
+                            break
+
+                if not tree_data:
+                    try: await interaction.channel.send(f"Failed to fetch GitHub tree: HTTP {last_status}")
+                    except: pass
+                    return
 
             # Parse posts from GitHub
             gh_posts = [] # list of (board_slug, post_slug)
