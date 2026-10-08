@@ -24,6 +24,20 @@ from Bot.shared.rate_limit import get_global_limiter
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("poller")
 
+async def set_canny_rate_limit_backoff(valkey, seconds=3600):
+    await valkey.set("canny_rate_limit_backoff", str(time.time() + seconds), ex=seconds)
+
+async def check_canny_backoff(valkey):
+    backoff_until = await valkey.get("canny_rate_limit_backoff")
+    if backoff_until:
+        try:
+            rem = float(backoff_until) - time.time()
+            if rem > 0:
+                logger.warning(f"Canny API rate limit/cooldown active. Waiting {int(rem)} seconds...")
+                await asyncio.sleep(rem)
+        except Exception:
+            pass
+
 async def process_post_data(valkey, post, board_info, p_url, uname, force_notify=False):
     """
     Processes a single post's data: updates cache, metrics, trending, and triggers notifications.
@@ -117,11 +131,19 @@ async def process_post_data(valkey, post, board_info, p_url, uname, force_notify
             if author_id and not just_processed:
                 new_passed = [m for m in milestones if score >= m and m > last_milestone_val]
                 await valkey.zincrby("metrics:author_milestones", len(new_passed), author_id)
+
+        if comments > old_comments:
+            last_notified_comments = await valkey.get(f"notified_comments:{pid}")
+            last_comments_val = int(last_notified_comments) if last_notified_comments else old_comments
+            if comments > last_comments_val or force_notify:
+                await valkey.lpush("{discord_jobs}", json.dumps({"type": "comment", "post": post, "old_comments": old_comments, "comments": comments, "url": p_url}))
+                await valkey.set(f"notified_comments:{pid}", str(comments))
     else:
         await valkey.set(f"notified_status:{pid}", status)
         milestones_list = [25, 50, 100]
         current_milestone_val = max([m for m in milestones_list if score >= m] + [0])
         await valkey.set(f"notified_milestone:{pid}", str(current_milestone_val))
+        await valkey.set(f"notified_comments:{pid}", str(comments))
 
         if score >= 25 or status.lower() != "open":
             if not await valkey.sismember("indexed_post_urls", p_url):
@@ -159,11 +181,14 @@ async def process_post_data(valkey, post, board_info, p_url, uname, force_notify
 
 async def discover_boards(valkey, limiter):
     logger.debug("Discovering boards...")
+    await check_canny_backoff(valkey)
     await limiter.acquire()
     data = await fetch_canny_data("https://feedback.vrchat.com/")
     if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
         err = data.get("error")
-        wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
+        if err == "rate_limit":
+            await set_canny_rate_limit_backoff(valkey, 3600)
+        wait = 10800 if err == "timeout" else 3600
         logger.warning(f"{err.replace('_', ' ').capitalize()} during board discovery. Sleeping for {wait//60} minutes.")
         await asyncio.sleep(wait)
         return []
@@ -200,6 +225,7 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
 
     for status in statuses:
         for sort in sorts:
+            await check_canny_backoff(valkey)
             payload = {
                 "__canny_requestID": f"poller-crawl-{board['urlName']}-{status}-{sort}",
                 "__host": "feedback.vrchat.com",
@@ -213,7 +239,9 @@ async def poll_board_recursive(valkey, limiter, board, force=False, progress_cal
             data = await fetch_canny_api("/api/posts/get", payload)
             if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                 err = data.get("error")
-                wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
+                if err == "rate_limit":
+                    await set_canny_rate_limit_backoff(valkey, 3600)
+                wait = 10800 if err == "timeout" else 3600
                 logger.warning(f"{err.replace('_', ' ').capitalize()} during API crawl for {board['name']}. Sleeping for {wait//60} minutes.")
                 await asyncio.sleep(wait)
                 continue
@@ -279,9 +307,12 @@ def get_polling_interval(post):
         return 3600
 
 async def poll_post(valkey, limiter, url, url_name):
+    await check_canny_backoff(valkey)
     await limiter.acquire()
     data = await fetch_canny_data(url)
     if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
+        if data.get("error") == "rate_limit":
+            await set_canny_rate_limit_backoff(valkey, 3600)
         return data.get("error")
     post = extract_post_from_data(data, url_name)
     if not post: return None
@@ -314,6 +345,7 @@ async def poller_loop():
             boards = await discover_boards(valkey, limiter)
             # Newest Sweep
             for b in boards:
+                await check_canny_backoff(valkey)
                 payload = {
                     "__canny_requestID": f"poller-sweep-{b['urlName']}",
                     "__host": "feedback.vrchat.com",
@@ -327,7 +359,9 @@ async def poller_loop():
                 data = await fetch_canny_api("/api/posts/get", payload)
                 if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                     err = data.get("error")
-                    wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
+                    if err == "rate_limit":
+                        await set_canny_rate_limit_backoff(valkey, 3600)
+                    wait = 10800 if err == "timeout" else 3600
                     logger.warning(f"{err.replace('_', ' ').capitalize()} during sweep for {b['name']}. Sleeping for {wait//60} minutes.")
                     await asyncio.sleep(wait)
                     continue
@@ -361,7 +395,9 @@ async def poller_loop():
                         name = parts[parts.index("p") + 1]
                         p = await poll_post(valkey, limiter, url, name)
                         if p in ["rate_limit", "server_error", "timeout"]:
-                            wait = 10800 if p == "timeout" else (3600 if p == "server_error" else 1800)
+                            if p == "rate_limit":
+                                await set_canny_rate_limit_backoff(valkey, 3600)
+                            wait = 10800 if p == "timeout" else 3600
                             logger.warning(f"{p.replace('_', ' ').capitalize()} polling {url}. Sleeping for {wait//60} minutes.")
                             await asyncio.sleep(wait)
                             continue

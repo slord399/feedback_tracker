@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+import pytest
 
 class MockValkey:
     def __init__(self):
@@ -26,6 +27,7 @@ class MockValkey:
             return items
         return [i[0] for i in items]
 
+@pytest.mark.asyncio
 async def test_metrics_logic():
     valkey = MockValkey()
     category = "trending_week"

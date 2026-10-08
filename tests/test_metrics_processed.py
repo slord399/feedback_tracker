@@ -1,5 +1,6 @@
 import asyncio
 import json
+import pytest
 
 class MockValkey:
     def __init__(self):
@@ -21,6 +22,7 @@ class MockValkey:
             self.author_milestones[value] = self.author_milestones.get(value, 0) + amount
         return self.author_posts.get(value) or self.author_milestones.get(value)
 
+@pytest.mark.asyncio
 async def test_idempotency():
     valkey = MockValkey()
 
