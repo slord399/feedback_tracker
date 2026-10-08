@@ -3,7 +3,7 @@ import os
 from Bot.shared.localization import get_localizer
 from datetime import datetime
 
-def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
+def create_canny_embed(post, old_status=None, user_info=None, lang="English", comment_update=None):
     loc = get_localizer()
     title = post.get("title")
     board = post.get("board", {})
@@ -47,6 +47,11 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
     score = post.get("score", 0)
     votes = str(score)
 
+    comments_count = post.get("commentCount") if post.get("commentCount") is not None else (post.get("comments") or 0)
+    comments_text = str(comments_count)
+    if comment_update and comment_update.get("old") != comment_update.get("new"):
+        comments_text = f"{comment_update.get('old', 0)} > {comment_update.get('new', comments_count)}"
+
     if current_status.lower() in ["complete", "completed", "available in future release"]:
         embed.set_thumbnail(url="attachment://Completed.png")
     elif score >= 100:
@@ -71,10 +76,11 @@ def create_canny_embed(post, old_status=None, user_info=None, lang="English"):
 
     embed.description = description
 
-    # Add status, created, and votes as inline fields
+    # Add status, created, votes, and comments as inline fields
     embed.add_field(name=loc.get('status', lang), value=status_text, inline=True)
     embed.add_field(name=loc.get('created', lang), value=created_display, inline=True)
     embed.add_field(name=loc.get('votes', lang), value=votes, inline=True)
+    embed.add_field(name=loc.get('comments', lang), value=comments_text, inline=True)
 
     image_urls = post.get("imageURLs", [])
     if image_urls: embed.set_image(url=image_urls[0])

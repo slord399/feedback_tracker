@@ -87,7 +87,9 @@ class Worker:
                     data = await fetch_canny_data(job["url"])
                     if isinstance(data, dict) and data.get("error") in ["rate_limit", "server_error", "timeout"]:
                         err = data.get("error")
-                        wait = 10800 if err == "timeout" else (3600 if err == "server_error" else 1800)
+                        if err == "rate_limit":
+                            await self.valkey.set("canny_rate_limit_backoff", str(time.time() + 3600), ex=3600)
+                        wait = 10800 if err == "timeout" else 3600
                         logger.warning(f"Worker encountered {err.replace('_', ' ').capitalize()} for {job['url']}. Repushing in {wait//60} minutes.")
                         asyncio.create_task(self.delayed_repush(res[0], job, wait))
                         continue
@@ -198,6 +200,36 @@ class Worker:
 
                                 user_info = {"type": "indexed", "name": u_name, "icon": u_icon}
                                 emb = create_canny_embed(post, old_status=job.get("old_status"), user_info=user_info, lang=lang)
+                                files = self.get_milestone_file(post)
+                                await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
+
+                elif job["type"] == "comment":
+                    await self.valkey.incr(f"stats:comment:{time.strftime('%Y-%m')}")
+
+                    is_truly_indexed = await self.valkey.sismember("indexed_post_urls", job["url"])
+                    if not is_truly_indexed:
+                        continue
+
+                    indexer = await self.valkey.hgetall(f"post_indexer_info:{job['url']}")
+                    orig_gid = indexer.get("guild_id")
+
+                    for gid in await get_active_guilds(self.valkey):
+                        cfg = await self.valkey.hgetall(f"guild_config:{gid}")
+                        is_indexed = await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"])
+                        if is_indexed:
+                            chan = cfg.get("status_channel")
+                            if chan:
+                                lang = cfg.get("language") or "English"
+
+                                u_name = indexer.get("name", "System Discovery")
+                                u_icon = indexer.get("icon")
+                                if str(gid) != orig_gid and u_name != "System Discovery":
+                                    u_name = "Indexed by Global Mode"
+                                    u_icon = None
+
+                                user_info = {"type": "indexed", "name": u_name, "icon": u_icon}
+                                comment_update = {"old": job.get("old_comments", 0), "new": job.get("comments", post.get("commentCount", 0))}
+                                emb = create_canny_embed(post, user_info=user_info, lang=lang, comment_update=comment_update)
                                 files = self.get_milestone_file(post)
                                 await self.send_request("POST", f"/channels/{chan}/messages", {"embeds": [emb.to_dict()], "components": self.view_to_components(create_canny_view(job["url"], lang=lang))}, gid, files=files)
             except (valkey.exceptions.TimeoutError, asyncio.TimeoutError): continue

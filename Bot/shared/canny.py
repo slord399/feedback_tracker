@@ -109,8 +109,8 @@ async def fetch_canny_api(endpoint_path: str, payload: dict):
     try:
         async with session.post(url, json=payload) as response:
             if response.status != 200:
-                if response.status == 429:
-                    logger.warning(f"Rate limited (429) POST {url}")
+                if response.status in (403, 429):
+                    logger.warning(f"Rate limited / Forbidden ({response.status}) POST {url}")
                     return {"error": "rate_limit"}
                 if response.status >= 500:
                     logger.error(f"Failed POST {url}, status: {response.status}")
@@ -145,8 +145,8 @@ async def fetch_canny_data(url: str, retry_fallback=True):
                         return await fetch_canny_data(fallback_url, retry_fallback=False)
 
             if response.status != 200:
-                if response.status == 429:
-                    logger.warning(f"Rate limited (429) fetching {url}")
+                if response.status in (403, 429):
+                    logger.warning(f"Rate limited / Forbidden ({response.status}) fetching {url}")
                     return {"error": "rate_limit"}
                 if response.status >= 500:
                     logger.error(f"Failed to fetch {url}, status: {response.status}")
