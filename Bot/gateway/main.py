@@ -300,7 +300,7 @@ class SearchView(ui.View):
         for r in self.results[start:end]:
             created = f"<t:{int(r.get('created', 0))}:R>" if r.get('created') else "Unknown"
             status_localized = loc.get(r.get('status', 'open').lower(), self.lang)
-            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**{loc.get('status', self.lang)}:** {status_localized} | **{loc.get('votes', self.lang)}:** {r.get('score', 0)} | **{loc.get('created', self.lang)}:** {created}", inline=False)
+            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**{loc.get('status', self.lang)}:** {status_localized} | **{loc.get('votes', self.lang)}:** {r.get('score', 0)} | **{loc.get('comments', self.lang)}:** {r.get('comments', 0)} | **{loc.get('created', self.lang)}:** {created}", inline=False)
         await interaction.response.edit_message(embed=embed, view=self, content=None)
 
 class SearchFilterView(ui.View):
@@ -424,7 +424,7 @@ class SearchQueryModal(ui.Modal):
         for r in res[:5]:
             created = f"<t:{int(r.get('created', 0))}:R>" if r.get('created') else "Unknown"
             status_localized = loc.get(r.get('status', 'open').lower(), self.lang)
-            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**{loc.get('status', self.lang)}:** {status_localized} | **{loc.get('votes', self.lang)}:** {r.get('score', 0)} | **{loc.get('created', self.lang)}:** {created}", inline=False)
+            embed.add_field(name=r['title'][:256], value=f"[Link](<{r['url']}>)\n**{loc.get('status', self.lang)}:** {status_localized} | **{loc.get('votes', self.lang)}:** {r.get('score', 0)} | **{loc.get('comments', self.lang)}:** {r.get('comments', 0)} | **{loc.get('created', self.lang)}:** {created}", inline=False)
         await interaction.followup.send(embed=embed, view=view, ephemeral=self.filter_view.ephemeral)
 
 class MyBot(commands.Bot):
