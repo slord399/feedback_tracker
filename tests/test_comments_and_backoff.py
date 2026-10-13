@@ -4,7 +4,7 @@ import time
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from Bot.poller.main import process_post_data, set_canny_rate_limit_backoff, check_canny_backoff
+from Bot.poller.main import process_post_data, set_canny_rate_limit_backoff, check_canny_backoff, run_initial_polling
 from Bot.shared.canny import fetch_canny_api, fetch_canny_data
 
 class MockValkey:
@@ -21,8 +21,18 @@ class MockValkey:
         self.store[key] = str(value)
         return True
 
+    async def delete(self, *keys):
+        for k in keys:
+            self.store.pop(k, None)
+            self.sets.pop(k, None)
+            self.hashes.pop(k, None)
+            self.lists.pop(k, None)
+
     async def hget(self, name, key):
         return self.hashes.get(name, {}).get(key)
+
+    async def hgetall(self, name):
+        return self.hashes.get(name, {})
 
     async def hset(self, name, key=None, value=None, mapping=None):
         if name not in self.hashes:
@@ -35,6 +45,9 @@ class MockValkey:
 
     async def sismember(self, name, value):
         return value in self.sets.get(name, set())
+
+    async def smembers(self, name):
+        return self.sets.get(name, set())
 
     async def sadd(self, name, value):
         if name not in self.sets:
@@ -69,13 +82,19 @@ class MockValkey:
         self.hashes[name][key] = str(val)
         return val
 
+    async def execute_command(self, *args, **kwargs):
+        return True
+
 
 @pytest.mark.asyncio
-async def test_comment_notification_enqueuing():
+async def test_comment_notification_enqueuing_local():
     valkey = MockValkey()
     pid = "post_123"
     p_url = "https://feedback.vrchat.com/feature-requests/p/test-post"
     board_info = {"name": "Feature Requests", "urlName": "feature-requests"}
+
+    # Set post indexer info showing local indexing
+    await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "User1", "icon": "", "guild_id": "1001"})
 
     old_post = {
         "_id": pid,
@@ -109,6 +128,75 @@ async def test_comment_notification_enqueuing():
     assert job["comments"] == 5
     assert job["url"] == p_url
     assert await valkey.get(f"notified_comments:{pid}") == "5"
+
+
+@pytest.mark.asyncio
+async def test_comment_notification_skipping_global_only():
+    valkey = MockValkey()
+    pid = "post_456"
+    p_url = "https://feedback.vrchat.com/feature-requests/p/global-only-post"
+    board_info = {"name": "Feature Requests", "urlName": "feature-requests"}
+
+    # Set post indexer info showing purely System Discovery (no local guild index)
+    await valkey.hset(f"post_indexer_info:{p_url}", mapping={"name": "System Discovery", "icon": "", "guild_id": ""})
+
+    old_post = {
+        "_id": pid,
+        "title": "Global Post",
+        "score": 30,
+        "status": "open",
+        "commentCount": 1,
+        "created": "2025-01-01T00:00:00.000Z"
+    }
+    await valkey.set(f"post_cache:{pid}", json.dumps(old_post))
+
+    updated_post = {
+        "_id": pid,
+        "title": "Global Post",
+        "score": 30,
+        "status": "open",
+        "commentCount": 4,
+        "created": "2025-01-01T00:00:00.000Z"
+    }
+
+    # Process updated post with new comments
+    await process_post_data(valkey, updated_post, board_info, p_url, "global-only-post")
+
+    # Comment job should NOT be enqueued because no local guild indexed it
+    assert "{discord_jobs}" not in valkey.lists or len(valkey.lists["{discord_jobs}"]) == 0
+    assert await valkey.get(f"notified_comments:{pid}") == "4"
+
+
+@pytest.mark.asyncio
+async def test_poller_restart_rate_limit_retry():
+    valkey = MockValkey()
+    limiter = MagicMock()
+    limiter.acquire = AsyncMock()
+
+    # Simulate rate-limit active upon restart
+    await set_canny_rate_limit_backoff(valkey, 2)
+
+    mock_boards = [{"id": "b1", "name": "Feature Requests", "urlName": "feature-requests", "postCount": 10}]
+
+    call_count = 0
+    async def mock_discover_boards(v, l):
+        nonlocal call_count
+        call_count += 1
+        return mock_boards
+
+    async def mock_poll_board_recursive(v, l, b, force=True):
+        return 5
+
+    with patch("Bot.poller.main.discover_boards", side_effect=mock_discover_boards), \
+         patch("Bot.poller.main.poll_board_recursive", side_effect=mock_poll_board_recursive), \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+
+        await run_initial_polling(valkey, limiter)
+
+        # Assert sleep was called to wait out backoff
+        mock_sleep.assert_called()
+        # Assert board discovery was completed after rate-limit backoff
+        assert call_count >= 1
 
 
 @pytest.mark.asyncio

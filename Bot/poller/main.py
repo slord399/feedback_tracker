@@ -17,7 +17,7 @@ logging.getLogger('discord.gateway').addFilter(VoiceFilter())
 
 import valkey
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from Bot.shared.valkey import get_valkey_client, refresh_valkey_cluster
+from Bot.shared.valkey import get_valkey_client, refresh_valkey_cluster, get_active_guilds
 from Bot.shared.canny import fetch_canny_data, fetch_canny_api, extract_post_from_data, extract_board_posts, extract_api_posts
 from Bot.shared.rate_limit import get_global_limiter
 
@@ -136,7 +136,21 @@ async def process_post_data(valkey, post, board_info, p_url, uname, force_notify
             last_notified_comments = await valkey.get(f"notified_comments:{pid}")
             last_comments_val = int(last_notified_comments) if last_notified_comments else old_comments
             if comments > last_comments_val or force_notify:
-                await valkey.lpush("{discord_jobs}", json.dumps({"type": "comment", "post": post, "old_comments": old_comments, "comments": comments, "url": p_url}))
+                # Check index origin metadata to ensure local guild indexing before enqueuing
+                indexer = await valkey.hgetall(f"post_indexer_info:{p_url}")
+                orig_gid = indexer.get("guild_id") if indexer else ""
+                has_local_index = False
+                if orig_gid and orig_gid != "0":
+                    has_local_index = True
+                else:
+                    active_guilds = await get_active_guilds(valkey)
+                    for active_gid in active_guilds:
+                        if await valkey.sismember(f"guild_locally_indexed_posts:{active_gid}", p_url):
+                            has_local_index = True
+                            break
+
+                if has_local_index:
+                    await valkey.lpush("{discord_jobs}", json.dumps({"type": "comment", "post": post, "old_comments": old_comments, "comments": comments, "url": p_url}))
                 await valkey.set(f"notified_comments:{pid}", str(comments))
     else:
         await valkey.set(f"notified_status:{pid}", status)
@@ -327,18 +341,50 @@ async def poll_post(valkey, limiter, url, url_name):
 
     return await process_post_data(valkey, post, board_info, url, url_name)
 
+async def run_initial_polling(valkey, limiter):
+    while True:
+        await check_canny_backoff(valkey)
+        boards = await discover_boards(valkey, limiter)
+
+        backoff_until = await valkey.get("canny_rate_limit_backoff")
+        if backoff_until:
+            try:
+                rem = float(backoff_until) - time.time()
+                if rem > 0:
+                    logger.warning(f"Rate limit cooldown active during startup discovery. Retrying after cooldown expires ({int(rem)}s)...")
+                    await check_canny_backoff(valkey)
+                    continue
+            except Exception:
+                pass
+
+        if not boards:
+            logger.warning("Board discovery returned no boards during startup. Retrying in 60s...")
+            await asyncio.sleep(60)
+            continue
+
+        logger.info(f"Starting initial crawl for {len(boards)} boards...")
+        tasks = [poll_board_recursive(valkey, limiter, b, force=True) for b in boards]
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        backoff_until = await valkey.get("canny_rate_limit_backoff")
+        if backoff_until:
+            try:
+                rem = float(backoff_until) - time.time()
+                if rem > 0:
+                    logger.warning(f"Rate limit triggered during initial crawl. Retrying after cooldown expires ({int(rem)}s)...")
+                    await check_canny_backoff(valkey)
+                    continue
+            except Exception:
+                pass
+
+        logger.info("Initial crawl complete. Signaling gateway for status update.")
+        await valkey.execute_command("PUBLISH", "bot:update_activity", "initial_polling_done")
+        break
+
 async def poller_loop():
     logger.info("Poller started")
     valkey = get_valkey_client(); limiter = get_global_limiter(valkey)
-    boards = await discover_boards(valkey, limiter)
-
-    # Run initial crawls and wait for them to finish
-    if boards:
-        logger.info(f"Starting initial crawl for {len(boards)} boards...")
-        tasks = [poll_board_recursive(valkey, limiter, b, force=True) for b in boards]
-        await asyncio.gather(*tasks)
-        logger.info("Initial crawl complete. Signaling gateway for status update.")
-        await valkey.execute_command("PUBLISH", "bot:update_activity", "initial_polling_done")
+    await run_initial_polling(valkey, limiter)
 
     while True:
         try:
