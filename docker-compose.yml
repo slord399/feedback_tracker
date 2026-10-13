@@ -2,6 +2,7 @@ services:
   poller:
     build: .
     image: canny-bot:latest
+    container_name: canny-bot-poller
     command: python Bot/poller/main.py
     environment:
       - VALKEY_NODES=valkey-1:6379,valkey-2:6379,valkey-3:6379,valkey-10:6379,valkey-11:6379
@@ -12,7 +13,9 @@ services:
     restart: always
 
   gateway-0:
+    build: .
     image: canny-bot:latest
+    container_name: canny-bot-gateway-0
     command: python Bot/gateway/main.py
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
@@ -26,7 +29,9 @@ services:
     restart: always
 
   gateway-1:
+    build: .
     image: canny-bot:latest
+    container_name: canny-bot-gateway-1
     command: python Bot/gateway/main.py
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
@@ -40,7 +45,9 @@ services:
     restart: always
 
   worker-0:
+    build: .
     image: canny-bot:latest
+    container_name: canny-bot-worker-0
     command: python Bot/worker/main.py
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
@@ -52,7 +59,9 @@ services:
     restart: always
 
   worker-1:
+    build: .
     image: canny-bot:latest
+    container_name: canny-bot-worker-1
     command: python Bot/worker/main.py
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN}
