@@ -110,6 +110,12 @@ class Worker:
 
                     if gid:
                         await self.valkey.sadd(f"guild_indexed_posts:{gid}", job["url"])
+                        if job.get("user_id", 0) != 0 or job.get("user_name") != "System Discovery":
+                            await self.valkey.sadd(f"guild_locally_indexed_posts:{gid}", job["url"])
+                            indexer_info = await self.valkey.hgetall(f"post_indexer_info:{job['url']}")
+                            if not indexer_info or indexer_info.get("name") == "System Discovery" or not indexer_info.get("guild_id") or indexer_info.get("guild_id") == "0":
+                                await self.valkey.hset(f"post_indexer_info:{job['url']}", mapping={"name": job["user_name"], "icon": job.get("user_icon") or "", "guild_id": str(gid)})
+
                         if cid:
                             user_type = "requested" if is_already_indexed else "indexed"
 
@@ -215,8 +221,8 @@ class Worker:
 
                     for gid in await get_active_guilds(self.valkey):
                         cfg = await self.valkey.hgetall(f"guild_config:{gid}")
-                        is_indexed = await self.valkey.sismember(f"guild_indexed_posts:{gid}", job["url"])
-                        if is_indexed:
+                        is_locally_indexed = await self.valkey.sismember(f"guild_locally_indexed_posts:{gid}", job["url"]) or (bool(orig_gid) and orig_gid != "0" and str(gid) == orig_gid)
+                        if is_locally_indexed:
                             chan = cfg.get("status_channel")
                             if chan:
                                 lang = cfg.get("language") or "English"
